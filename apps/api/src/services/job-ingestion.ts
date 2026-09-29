@@ -12,6 +12,15 @@ type Job = PrismaJob;
 
 const { request: undiciRequest } = undici;
 
+function isGreenhouseUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === 'job-boards.greenhouse.io' && parsed.pathname.includes('/jobs/');
+  } catch {
+    return false;
+  }
+}
+
 const PRIVATE_IP_RANGES = [
   /^10\./,
   /^127\./,
@@ -132,10 +141,20 @@ async function fetchPage(url: string): Promise<string> {
       throw new Error('Response is not HTML content');
     }
 
+    const contentEncoding = headers['content-encoding'] || '';
+    let stream: AsyncIterable<Uint8Array> = body;
+    if (contentEncoding.includes('gzip')) {
+      const zlib = await import('zlib');
+      stream = body.pipe(zlib.createGunzip()) as AsyncIterable<Uint8Array>;
+    } else if (contentEncoding.includes('deflate')) {
+      const zlib = await import('zlib');
+      stream = body.pipe(zlib.createInflate()) as AsyncIterable<Uint8Array>;
+    }
+
     let chunks: Uint8Array[] = [];
     let totalSize = 0;
 
-    for await (const chunk of body) {
+    for await (const chunk of stream) {
       chunks.push(chunk);
       totalSize += chunk.length;
       if (totalSize > MAX_RESPONSE_SIZE) {
@@ -204,6 +223,83 @@ function extractJsonLd($: cheerio.CheerioAPI): ExtractedJobData | null {
   }
 
   return null;
+}
+
+function extractGreenhouse($: cheerio.CheerioAPI): ExtractedJobData {
+  const text = (selector: string) => $(selector).first().text().trim() || null;
+  const html = (selector: string) => $(selector).first().html() || null;
+  const attr = (selector: string, attrName: string) => $(selector).first().attr(attrName) || null;
+
+  // Title from Greenhouse-specific structure
+  const title = 
+    text('.job__header .job__title h1.section-header, .job__title h1, .job-post .job__header h1') ||
+    attr('meta[property="og:title"]', 'content') ||
+    null;
+
+  // Company from logo alt or link
+  const company = 
+    attr('.job-post-container .image-container .logo img', 'alt')?.replace(' Logo', '') ||
+    attr('.job-post-container .image-container .logo', 'href')?.split('/').pop()?.replace(/-/g, ' ') ||
+    attr('meta[property="og:site_name"]', 'content') ||
+    null;
+
+  // Location from Greenhouse-specific structure
+  const location = 
+    text('.job__header .job__location div, .job__location, [class*="job__location"]') ||
+    attr('meta[property="og:description"]', 'content') ||
+    null;
+
+  // Description from Greenhouse-specific structure
+  const descriptionHtml = 
+    html('.job__description.body, .job__description, [class*="job__description"]') ||
+    html('.job-post .job__description') ||
+    null;
+  
+  const description = descriptionHtml ? cleanHtml(decodeHtmlEntities(descriptionHtml)) : null;
+
+  // External job ID from URL or page
+  const externalId = attr('link[rel="canonical"]', 'href')?.split('/').pop() || null;
+
+  // Requirements and responsibilities from description parsing
+  let requirements: string[] | null = null;
+  let responsibilities: string[] | null = null;
+  
+  if (descriptionHtml) {
+    const $desc = cheerio.load(descriptionHtml);
+    const reqItems = $desc('h2:contains("Requirement"), h3:contains("Requirement"), strong:contains("Requirement")')
+      .nextUntil('h2, h3').find('li').map((_, el) => $desc(el).text().trim()).get();
+    if (reqItems.length > 0) requirements = reqItems;
+    
+    const respItems = $desc('h2:contains("Responsibilit"), h3:contains("Responsibilit"), strong:contains("Responsibilit")')
+      .nextUntil('h2, h3').find('li').map((_, el) => $desc(el).text().trim()).get();
+    if (respItems.length > 0) responsibilities = respItems;
+  }
+
+  // Posted date - Greenhouse sometimes includes this
+  const postedAtText = text('.job__posted-date, .job-post-date, [class*="posted-date"]');
+  let postedAt: Date | null = null;
+  if (postedAtText) {
+    const parsed = new Date(postedAtText);
+    if (!isNaN(parsed.getTime())) postedAt = parsed;
+  }
+
+  return {
+    title,
+    company,
+    location,
+    description,
+    employmentType: null,
+    workMode: null,
+    salaryMin: null,
+    salaryMax: null,
+    salaryCurrency: 'USD',
+    requirements,
+    responsibilities,
+    skills: null,
+    externalId,
+    postedAt,
+    rawHtml: null,
+  };
 }
 
 function decodeHtmlEntities(text: string): string {
@@ -394,6 +490,11 @@ export async function ingestJobFromUrl(url: string, userId: string): Promise<Ing
   const $ = cheerio.load(html);
 
   let extracted = extractJsonLd($);
+  
+  // Try Greenhouse-specific extractor for Greenhouse URLs
+  if (!extracted && isGreenhouseUrl(normalizedUrl)) {
+    extracted = extractGreenhouse($);
+  }
   
   if (!extracted) {
     extracted = extractFromHtml($);

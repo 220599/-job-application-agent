@@ -7,6 +7,7 @@ import {
   candidateApi,
   skillsApi,
   resumeApi,
+  jobsApi,
 } from '@/lib/api';
 import {
   Card,
@@ -20,6 +21,14 @@ import {
 } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { calculateProfileCompleteness } from '@/lib/utils';
+import {
+  Plus,
+  Briefcase,
+  FileText,
+  User,
+  ExternalLink,
+  FolderKanban,
+} from 'lucide-react';
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -53,14 +62,24 @@ export default function DashboardPage() {
     queryFn: () => resumeApi.list(),
   });
 
+  // Fetch jobs
+  const {
+    data: jobsData,
+    isLoading: jobsLoading,
+  } = useQuery({
+    queryKey: ['jobs'],
+    queryFn: () => jobsApi.list(),
+  });
+
   const profile = profileData?.data;
   const skills = skillsData?.data ?? [];
   const resumes = resumesData?.data?.data ?? [];
+  const jobs = jobsData?.data?.data ?? [];
   const defaultResume = resumes.find((r) => r.isDefault);
 
   const profileCompleteness = calculateProfileCompleteness(profile || null, [], [], skills, resumes);
 
-  if (profileLoading || skillsLoading || resumesLoading) {
+  if (profileLoading || skillsLoading || resumesLoading || jobsLoading) {
     return (
       <div className="space-y-6">
         <div>
@@ -155,12 +174,15 @@ export default function DashboardPage() {
       </Card>
 
       {/* Quick Stats */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         {/* Profile Info */}
         <Card>
-          <CardHeader>
-            <CardTitle>Profile</CardTitle>
-            <CardDescription>Your candidate information</CardDescription>
+          <CardHeader className="flex items-center justify-between">
+            <div>
+              <CardTitle>Profile</CardTitle>
+              <CardDescription>Your candidate information</CardDescription>
+            </div>
+            <User className="h-5 w-5 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             {profile ? (
@@ -185,9 +207,12 @@ export default function DashboardPage() {
 
         {/* Resume Count */}
         <Card>
-          <CardHeader>
-            <CardTitle>Resumes</CardTitle>
-            <CardDescription>Your uploaded resumes</CardDescription>
+          <CardHeader className="flex items-center justify-between">
+            <div>
+              <CardTitle>Resumes</CardTitle>
+              <CardDescription>Your uploaded resumes</CardDescription>
+            </div>
+            <FileText className="h-5 w-5 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="flex items-center justify-between">
@@ -197,15 +222,47 @@ export default function DashboardPage() {
                   {resumes.length === 1 ? 'resume' : 'resumes'}
                 </p>
               </div>
+              <Button variant="ghost" size="sm" onClick={() => router.push('/resumes')}>
+                <Plus className="h-4 w-4 mr-1" />
+                Add
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Jobs Count */}
+        <Card>
+          <CardHeader className="flex items-center justify-between">
+            <div>
+              <CardTitle>Jobs</CardTitle>
+              <CardDescription>Imported opportunities</CardDescription>
+            </div>
+            <Briefcase className="h-5 w-5 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-2xl font-bold">{jobs.length}</p>
+                <p className="text-sm text-muted-foreground">
+                  {jobs.length === 1 ? 'job' : 'jobs'}
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => router.push('/jobs')}>
+                <Plus className="h-4 w-4 mr-1" />
+                Import
+              </Button>
             </div>
           </CardContent>
         </Card>
 
         {/* Skills Count */}
         <Card>
-          <CardHeader>
-            <CardTitle>Skills</CardTitle>
-            <CardDescription>Your professional skills</CardDescription>
+          <CardHeader className="flex items-center justify-between">
+            <div>
+              <CardTitle>Skills</CardTitle>
+              <CardDescription>Your professional skills</CardDescription>
+            </div>
+            <User className="h-5 w-5 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="flex items-center justify-between">
@@ -215,6 +272,10 @@ export default function DashboardPage() {
                   {skills.length === 1 ? 'skill' : 'skills'}
                 </p>
               </div>
+              <Button variant="ghost" size="sm" onClick={() => router.push('/profile')}>
+                <Plus className="h-4 w-4 mr-1" />
+                Add
+              </Button>
             </div>
           </CardContent>
         </Card>
@@ -222,11 +283,12 @@ export default function DashboardPage() {
 
       {/* Default Resume */}
       <Card>
-        <CardHeader>
-          <CardTitle>Default Resume</CardTitle>
-          <CardDescription>
-            Resume used for job applications
-          </CardDescription>
+        <CardHeader className="flex items-center justify-between">
+          <div>
+            <CardTitle>Default Resume</CardTitle>
+            <CardDescription>Resume used for job applications</CardDescription>
+          </div>
+          <FileText className="h-5 w-5 text-muted-foreground" />
         </CardHeader>
         <CardContent>
           {defaultResume ? (
@@ -240,61 +302,115 @@ export default function DashboardPage() {
               <Badge variant="success">Active</Badge>
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">
-              No default resume set. Set one to use for job applications.
-            </p>
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">
+                No default resume set. Set one to use for job applications.
+              </p>
+              <Button variant="outline" size="sm" onClick={() => router.push('/resumes')}>
+                Go to Resumes
+              </Button>
+            </div>
           )}
         </CardContent>
       </Card>
+
+      {/* Recently Imported Jobs */}
+      {jobs.length > 0 && (
+        <Card>
+          <CardHeader className="flex items-center justify-between">
+            <div>
+              <CardTitle>Recent Jobs</CardTitle>
+              <CardDescription>Your most recently imported opportunities</CardDescription>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => router.push('/jobs')}>
+              View All
+              <ExternalLink className="h-3 w-3 ml-1" />
+            </Button>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {jobs.slice(0, 5).map((job) => (
+                <div
+                  key={job.id}
+                  className="flex items-center justify-between p-3 rounded-lg border hover:bg-accent/50 transition-colors"
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium truncate">{job.title}</p>
+                    <p className="text-sm text-muted-foreground flex items-center gap-2 flex-wrap">
+                      <span className="font-medium">{job.company}</span>
+                      {job.location && <span>{job.location}</span>}
+                      <Badge variant="outline">{job.source}</Badge>
+                      {job.workMode && <Badge variant="secondary">{job.workMode}</Badge>}
+                    </p>
+                  </div>
+                  <a
+                    href={job.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-primary hover:underline flex items-center gap-1"
+                  >
+                    View
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Quick Actions */}
       <Card>
         <CardHeader>
           <CardTitle>Quick Actions</CardTitle>
-          <CardDescription>Common tasks</CardDescription>
+          <CardDescription>Common tasks to get started</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="flex flex-col gap-2 sm:flex-row">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Button
-              onClick={() => router.push('/profile')}
-              className="w-full sm:w-auto"
+              onClick={() => router.push('/jobs')}
+              className="h-auto py-4 flex flex-col items-start gap-2"
             >
-              Edit Profile
+              <Briefcase className="h-6 w-6" />
+              <div>
+                <p className="font-medium">Import Job</p>
+                <p className="text-sm text-muted-foreground">Add a new job from URL</p>
+              </div>
             </Button>
             <Button
+              variant="outline"
               onClick={() => router.push('/resumes')}
-              variant="secondary"
-              className="w-full sm:w-auto"
+              className="h-auto py-4 flex flex-col items-start gap-2"
             >
-              View Resumes
+              <FileText className="h-6 w-6" />
+              <div>
+                <p className="font-medium">Manage Resumes</p>
+                <p className="text-sm text-muted-foreground">Upload or update resumes</p>
+              </div>
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => router.push('/profile')}
+              className="h-auto py-4 flex flex-col items-start gap-2"
+            >
+              <User className="h-6 w-6" />
+              <div>
+                <p className="font-medium">Edit Profile</p>
+                <p className="text-sm text-muted-foreground">Update your information</p>
+              </div>
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => router.push('/applications')}
+              className="h-auto py-4 flex flex-col items-start gap-2"
+            >
+              <FolderKanban className="h-6 w-6" />
+              <div>
+                <p className="font-medium">Applications</p>
+                <p className="text-sm text-muted-foreground">Track your applications</p>
+              </div>
             </Button>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Jobs Section - Coming Soon */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Jobs</CardTitle>
-          <CardDescription>Your job matches</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground">
-            Job discovery and matching will be available in a future update.
-          </p>
-        </CardContent>
-      </Card>
-
-      {/* Applications Section - Coming Soon */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Applications</CardTitle>
-          <CardDescription>Your job applications</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground">
-            Automated application submission will be available in a future update.
-          </p>
         </CardContent>
       </Card>
     </div>

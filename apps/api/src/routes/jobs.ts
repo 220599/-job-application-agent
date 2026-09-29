@@ -14,9 +14,11 @@ router.post(
   asyncHandler(async (req: Request, res: Response) => {
     const userId = req.userId!;
     const { url } = ingestSchema.parse(req.body);
+    console.log('[API] Ingesting job from URL:', url, 'for user:', userId);
 
     try {
       const result = await ingestJobFromUrl(url, userId);
+      console.log('[API] Ingestion result:', result.created ? 'created' : 'existing', result.job.id);
       
       const statusCode = result.created ? 201 : 200;
       res.status(statusCode).json({ 
@@ -54,6 +56,7 @@ router.post(
       }
       throw error;
     }
+    console.log('[API] Ingestion completed successfully');
   })
 );
 

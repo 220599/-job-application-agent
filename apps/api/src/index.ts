@@ -20,6 +20,16 @@ dotenv.config();
 const app = express();
 const PORT = process.env.API_PORT || 3001;
 
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection', reason, { promise });
+});
+
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception', error);
+  process.exit(1);
+});
+
 // Middleware
 app.use(cors());
 app.use(express.json());

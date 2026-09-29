@@ -1,14 +1,37 @@
 'use client';
 
 import * as React from 'react';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/cn';
+import {
+  LayoutDashboard,
+  Briefcase,
+  FileText,
+  User,
+  Settings,
+  FolderKanban,
+  Menu,
+  X,
+  ChevronRight,
+} from 'lucide-react';
 
 type NavItem = {
   key: string;
   label: string;
   href: string;
+  icon: React.ReactNode;
   disabled?: boolean;
 };
+
+const navItems: NavItem[] = [
+  { key: 'dashboard', label: 'Dashboard', href: '/dashboard', icon: <LayoutDashboard className="h-4 w-4" /> },
+  { key: 'jobs', label: 'Jobs', href: '/jobs', icon: <Briefcase className="h-4 w-4" /> },
+  { key: 'resumes', label: 'Resumes', href: '/resumes', icon: <FileText className="h-4 w-4" /> },
+  { key: 'profile', label: 'Profile', href: '/profile', icon: <User className="h-4 w-4" /> },
+  { key: 'applications', label: 'Applications', href: '/applications', icon: <FolderKanban className="h-4 w-4" /> },
+  { key: 'settings', label: 'Settings', href: '/settings', icon: <Settings className="h-4 w-4" /> },
+];
 
 export function MainLayout({
   children,
@@ -17,150 +40,111 @@ export function MainLayout({
   children: React.ReactNode;
   title?: string;
 }) {
-  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
-
-  const navItems: NavItem[] = [
-    { key: 'dashboard', label: 'Dashboard', href: '/dashboard' },
-    { key: 'profile', label: 'Profile', href: '/profile' },
-    { key: 'resumes', label: 'Resumes', href: '/resumes' },
-    { key: 'jobs', label: 'Jobs', href: '/jobs' },
-    {
-      key: 'applications',
-      label: 'Applications',
-      href: '/applications',
-      disabled: true,
-    },
-    { key: 'settings', label: 'Settings', href: '/settings' },
-  ];
+  const pathname = usePathname();
+  const [sidebarOpen, setSidebarOpen] = React.useState(false);
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Top Navigation */}
-      <header className="border-b border-input/50 bg-background sticky top-0 z-20">
-        <div className="max-w-[1400px] mx-auto flex items-center justify-between px-4 py-3">
-          {/* Logo / App Name */}
-          <h1 className="flex items-center gap-2">
-            <span className="text-xl font-bold">Job Application Agent</span>
-          </h1>
+    <div className="min-h-screen bg-background flex">
+      {/* Sidebar - Desktop: always visible, Mobile: drawer */}
+      <aside
+        className={cn(
+          'fixed inset-y-0 left-0 z-40 w-64 bg-card border-r border-input/50 flex flex-col transition-transform duration-200 ease-in-out',
+          'lg:translate-x-0',
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        )}
+        aria-label="Main navigation"
+      >
+        {/* Sidebar Header */}
+        <div className="flex items-center justify-between h-16 px-4 border-b border-input/50">
+          <span className="font-semibold text-lg">Job Application Agent</span>
+          <button
+            className="lg:hidden p-2 rounded-md hover:bg-accent/10"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Close sidebar"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Sidebar Navigation */}
+        <nav className="flex-1 flex flex-col gap-1 p-4" aria-label="Main navigation">
+          {navItems.map((item) => {
+            const isActive = pathname === item.href || (item.href !== '/dashboard' && pathname.startsWith(item.href));
+            return (
+              <Link
+                key={item.key}
+                href={item.href}
+                className={cn(
+                  'flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition-colors',
+                  isActive
+                    ? 'bg-primary/10 text-primary border-l-2 border-primary'
+                    : 'text-muted-foreground hover:bg-accent/10 hover:text-foreground',
+                  item.disabled && 'opacity-50 cursor-not-allowed pointer-events-none'
+                )}
+                aria-current={isActive ? 'page' : undefined}
+                aria-disabled={item.disabled}
+              >
+                <span className={cn('flex-shrink-0', isActive ? 'text-primary' : 'text-muted-foreground')}>
+                  {item.icon}
+                </span>
+                <span className="truncate">{item.label}</span>
+                {isActive && <ChevronRight className="h-4 w-4 text-primary ml-auto flex-shrink-0" />}
+              </Link>
+            );
+          })}
+        </nav>
+
+        {/* Sidebar Footer */}
+        <div className="p-4 border-t border-input/50">
+          <p className="text-xs text-muted-foreground text-center">
+            Job Application Agent v0.1.0
+          </p>
+        </div>
+      </aside>
+
+      {/* Mobile sidebar overlay */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/50 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col lg:pl-64 min-w-0">
+        {/* Top Header */}
+        <header className="sticky top-0 z-20 h-16 bg-background/95 backdrop-blur-sm border-b border-input/50 flex items-center justify-between px-4 lg:px-6">
+          {/* Mobile menu button */}
+          <button
+            className="lg:hidden p-2 rounded-md hover:bg-accent/10"
+            onClick={() => setSidebarOpen(true)}
+            aria-label="Open menu"
+          >
+            <Menu className="h-5 w-5" />
+          </button>
+
+          {/* Page Title */}
+          <div className="flex-1">
+            <h1 className="text-xl font-semibold truncate">
+              {title || 'Job Application Agent'}
+            </h1>
+          </div>
 
           {/* User Profile Area */}
           <div className="flex items-center gap-3">
-            {/* Settings button */}
-            <button
-              className="rounded-md bg-transparent p-1.5 hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 transition-colors"
-              aria-label="Settings"
-            >
-              <svg
-                className="h-5 w-5"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-              >
-                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
-              </svg>
-            </button>
-
-            {/* User avatar / initials */}
-            <button
-              aria-label="User profile"
-              className="flex items-center gap-2 rounded-full border border-input p-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-            >
-              <span className="font-medium text-sm">
-                Dev User
-              </span>
-              <svg
-                className="h-4 w-4"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-              >
-                <path d="M12 6v6l4 2" />
-              </svg>
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Content Area */}
-      <main className="flex flex-1 flex-col">
-        {/* Sidebar */}
-        <aside
-          className={cn(
-            'w-64 h-screen bg-card flex-shrink-0 border-r border-input/50 flex flex-col pt-6',
-            isMobile && 'hidden'
-          )}
-        >
-          {/* Sidebar Logo */}
-          <div className="flex items-center justify-center h-14 border-b border-input/50 mb-6">
-            <span className="text-sm font-medium">Job App</span>
-          </div>
-
-          {/* Sidebar Navigation */}
-          <nav className="flex-1 flex flex-col gap-1">
-            {navItems.map((item) => (
-              <button
-                key={item.key}
-                onClick={() => {
-                  if (!item.disabled) {
-                    // Simple navigation - in a real app this would navigate
-                    window.location.href = item.href;
-                  }
-                }}
-                className={cn(
-                  'flex items-center rounded-md px-3 py-2 text-sm font-medium transition-colors hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-                  item.disabled
-                    ? 'text-muted-foreground cursor-not-allowed opacity-50'
-                    : ''
-                )}
-                disabled={item.disabled}
-                aria-disabled={item.disabled}
-                aria-label={item.label}
-              >
-                <svg
-                  className="h-4 w-4 shrink-0"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
-                </svg>
-                <span className="ml-2">{item.label}</span>
-              </button>
-            ))}
-          </nav>
-        </aside>
-
-        {/* Content */}
-        <div className="flex-1 flex-0 overflow-hidden">
-          {/* Top bar for mobile sidebar toggle */}
-          {isMobile && (
-            <div className="p-4 flex items-center justify-between border-b border-input/50">
-              <button
-                className="rounded-md p-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                aria-label="Open sidebar"
-                onClick={() => {}}
-              >
-                <svg
-                  className="h-5 w-5"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <path d="M3 12l2-5 10 7-10 7-2-5z" />
-                </svg>
-              </button>
-              <h2 className="font-medium text-lg">{title || 'Job Application Agent'}</h2>
+            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full border border-input/50 bg-muted/50 text-sm">
+              <span className="font-medium">Dev User</span>
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
             </div>
-          )}
+          </div>
+        </header>
 
-          {/* Page Content */}
-          <div className="p-4">{children}</div>
-        </div>
-      </main>
+        {/* Page Content */}
+        <main className="flex-1 p-4 lg:p-6 overflow-auto">
+          {children}
+        </main>
+      </div>
     </div>
   );
 }

@@ -36,6 +36,7 @@ export const errorHandler = (
     userId: req.userId,
     path: req.path,
     method: req.method,
+    stack: err.stack,
   });
 
   // Zod validation errors

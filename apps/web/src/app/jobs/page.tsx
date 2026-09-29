@@ -14,9 +14,9 @@ import {
   Skeleton,
   Input,
   Label,
-  Textarea,
 } from '@/components/ui';
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from '@/components/ui';
+import { Plus, Trash2, ExternalLink, Search, Loader2, Briefcase } from 'lucide-react';
 
 export default function JobsPage() {
   const queryClient = useQueryClient();
@@ -104,9 +104,11 @@ export default function JobsPage() {
   if (isLoading) {
     return (
       <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Jobs</h1>
-          <p className="text-muted-foreground">Import and manage job postings</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">Jobs</h1>
+            <p className="text-muted-foreground">Import and manage job postings</p>
+          </div>
         </div>
         <div className="space-y-4">
           <Card>
@@ -136,9 +138,11 @@ export default function JobsPage() {
   if (error) {
     return (
       <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Jobs</h1>
-          <p className="text-muted-foreground">Import and manage job postings</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">Jobs</h1>
+            <p className="text-muted-foreground">Import and manage job postings</p>
+          </div>
         </div>
         <div className="rounded-md bg-destructive/10 p-4 text-destructive">
           <p>Error loading jobs. Please try again.</p>
@@ -149,43 +153,61 @@ export default function JobsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Jobs</h1>
-        <p className="text-muted-foreground">Import and manage job postings</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Jobs</h1>
+          <p className="text-muted-foreground">Import and manage job postings</p>
+        </div>
       </div>
 
       {/* Import Job Form */}
       <Card>
-        <CardHeader>
-          <CardTitle>Import Job from URL</CardTitle>
-          <CardDescription>
-            Paste a public job posting URL to extract and save the job information
-          </CardDescription>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div>
+            <CardTitle>Import Job from URL</CardTitle>
+            <CardDescription>
+              Paste a public job posting URL to extract and save the job information
+            </CardDescription>
+          </div>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="grid gap-2">
               <Label htmlFor="job-url">Job URL</Label>
-              <Input
-                id="job-url"
-                type="url"
-                value={url}
-                onChange={(e) => {
-                  setUrl(e.target.value);
-                  setUrlError(null);
-                }}
-                placeholder="https://example.com/job/123"
-                disabled={importMutation.isPending}
-                className={urlError ? 'border-destructive' : ''}
-              />
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    id="job-url"
+                    type="url"
+                    value={url}
+                    onChange={(e) => {
+                      setUrl(e.target.value);
+                      setUrlError(null);
+                    }}
+                    placeholder="https://example.com/job/123"
+                    disabled={importMutation.isPending}
+                    className={urlError ? 'border-destructive pl-10' : 'pl-10'}
+                  />
+                </div>
+                <Button type="submit" disabled={importMutation.isPending || !url.trim()}>
+                  {importMutation.isPending ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                      Importing...
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="h-4 w-4 mr-2" />
+                      Import Job
+                    </>
+                  )}
+                </Button>
+              </div>
               {urlError && (
                 <p className="text-sm text-destructive">{urlError}</p>
               )}
             </div>
-
-            <Button type="submit" disabled={importMutation.isPending || !url.trim()}>
-              {importMutation.isPending ? 'Importing...' : 'Import Job'}
-            </Button>
           </form>
 
           {successMessage && (
@@ -207,9 +229,7 @@ export default function JobsPage() {
         <Card>
           <CardContent className="py-12 text-center">
             <div className="mx-auto w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4">
-              <svg className="h-8 w-8 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-              </svg>
+              <Briefcase className="h-8 w-8 text-muted-foreground" />
             </div>
             <h3 className="text-lg font-medium">No jobs imported yet</h3>
             <p className="text-muted-foreground mt-2 mb-4">Import your first job by pasting a URL above</p>
@@ -220,57 +240,68 @@ export default function JobsPage() {
           {jobs.map((job) => (
             <Card key={job.id}>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <div className="flex-1 min-w-0">
-                  <CardTitle className="truncate">{job.title}</CardTitle>
-                  <CardDescription className="flex items-center gap-3 flex-wrap">
-                    <span className="font-medium">{job.company}</span>
-                    {job.location && (
-                      <Badge variant="outline">{job.location}</Badge>
-                    )}
-                    <Badge variant="outline">{job.source}</Badge>
-                    {job.workMode && (
-                      <Badge variant="secondary">{job.workMode}</Badge>
-                    )}
-                    {job.employmentType && (
-                      <Badge variant="outline">{job.employmentType}</Badge>
-                    )}
-                    {job.salaryMin && job.salaryMax && (
-                      <Badge variant="outline">
-                        ${job.salaryMin.toLocaleString()} - ${job.salaryMax.toLocaleString()} {job.salaryCurrency}
-                      </Badge>
-                    )}
-                    <span className="text-xs text-muted-foreground">
-                      Imported: {formatDate(job.discoveredAt)}
-                    </span>
-                  </CardDescription>
-                </div>
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-destructive hover:text-destructive"
-                      disabled={deleteMutation.isPending}
+                <div className="flex items-center gap-4">
+                  <div className="flex-1 min-w-0">
+                    <CardTitle className="truncate">{job.title}</CardTitle>
+                    <CardDescription className="flex items-center gap-3 flex-wrap">
+                      <span className="font-medium">{job.company}</span>
+                      {job.location && (
+                        <Badge variant="outline">{job.location}</Badge>
+                      )}
+                      <Badge variant="outline">{job.source}</Badge>
+                      {job.workMode && (
+                        <Badge variant="secondary">{job.workMode}</Badge>
+                      )}
+                      {job.employmentType && (
+                        <Badge variant="outline">{job.employmentType}</Badge>
+                      )}
+                      {job.salaryMin && job.salaryMax && (
+                        <Badge variant="outline">
+                          ${job.salaryMin.toLocaleString()} - ${job.salaryMax.toLocaleString()} {job.salaryCurrency}
+                        </Badge>
+                      )}
+                      <span className="text-xs text-muted-foreground">
+                        Imported: {formatDate(job.discoveredAt)}
+                      </span>
+                    </CardDescription>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={job.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sm text-primary hover:underline flex items-center gap-1"
                     >
-                      <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                      <span className="sr-only">Delete job</span>
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        This will permanently delete "{job.title}" at {job.company}. This action cannot be undone.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction onClick={() => deleteMutation.mutate(job.id)}>Delete</AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
+                      <ExternalLink className="h-3 w-3" />
+                      View Posting
+                    </a>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-destructive hover:text-destructive"
+                          disabled={deleteMutation.isPending}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          <span className="sr-only">Delete job</span>
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This will permanently delete "{job.title}" at {job.company}. This action cannot be undone.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction onClick={() => deleteMutation.mutate(job.id)}>Delete</AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent>
                 <div className="space-y-3">
@@ -338,9 +369,7 @@ export default function JobsPage() {
                       rel="noopener noreferrer"
                       className="text-sm text-primary hover:underline flex items-center gap-1"
                     >
-                      <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                      </svg>
+                      <ExternalLink className="h-3 w-3" />
                       View Original Posting
                     </a>
                   </div>
