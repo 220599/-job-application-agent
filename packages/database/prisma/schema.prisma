@@ -1,2 +1,447 @@
-// This is the Prisma schema placeholder
-// Full implementation will be in Phase 2
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ============================================================================
+// USER & AUTHENTICATION
+// ============================================================================
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  candidateProfile    CandidateProfile?
+  resumes             Resume[]
+  jobs                Job[]
+  jobMatches          JobMatch[]
+  applications        Application[]
+  applicationEvents   ApplicationEvent[]
+  automationRuns      AutomationRun[]
+
+  @@index([email])
+}
+
+// ============================================================================
+// CANDIDATE PROFILE
+// ============================================================================
+
+model CandidateProfile {
+  id                   String   @id @default(cuid())
+  userId               String   @unique
+  firstName            String
+  lastName             String
+  preferredName        String?
+  email                String
+  phone                String?
+  location             String?
+  city                 String?
+  state                String?
+  country              String?
+  zipCode              String?
+  linkedinUrl          String?
+  githubUrl            String?
+  portfolioUrl         String?
+  websiteUrl           String?
+  workAuthorization    String   @default("OTHER") // Allow flexibility for international
+  sponsorshipRequired  Boolean  @default(false)
+  willingToRelocate    Boolean  @default(false)
+  preferredWorkMode    WorkMode @default(ANY)
+  preferredLocations   String[] // JSON array of strings
+  desiredRoles         String[] // JSON array of strings
+  desiredSalaryMin     Int?
+  desiredSalaryMax     Int?
+  summary              String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  // Relations
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  education  Education[]
+  experience Experience[]
+  skills     Skill[]
+
+  @@index([userId])
+  @@index([email])
+}
+
+enum WorkMode {
+  REMOTE
+  HYBRID
+  ONSITE
+  ANY
+}
+
+// ============================================================================
+// EDUCATION
+// ============================================================================
+
+model Education {
+  id                 String    @id @default(cuid())
+  candidateProfileId String
+  institution        String
+  degree             String
+  fieldOfStudy       String
+  startDate          DateTime
+  endDate            DateTime?
+  gpa                Float?
+  description        String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  // Relations
+  candidateProfile CandidateProfile @relation(fields: [candidateProfileId], references: [id], onDelete: Cascade)
+
+  @@index([candidateProfileId])
+}
+
+// ============================================================================
+// EXPERIENCE
+// ============================================================================
+
+model Experience {
+  id                 String   @id @default(cuid())
+  candidateProfileId String
+  company            String
+  title              String
+  location           String?
+  employmentType     String   @default("FULL_TIME")
+  startDate          DateTime
+  endDate            DateTime?
+  isCurrent          Boolean  @default(false)
+  description        String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  // Relations
+  candidateProfile CandidateProfile @relation(fields: [candidateProfileId], references: [id], onDelete: Cascade)
+
+  @@index([candidateProfileId])
+}
+
+// ============================================================================
+// SKILLS
+// ============================================================================
+
+model Skill {
+  id                 String   @id @default(cuid())
+  candidateProfileId String
+  name               String
+  category           String?
+  proficiency        String   @default("INTERMEDIATE") // BEGINNER, INTERMEDIATE, ADVANCED, EXPERT
+  yearsOfExperience  Float?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  // Relations
+  candidateProfile CandidateProfile @relation(fields: [candidateProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([candidateProfileId, name])
+  @@index([candidateProfileId])
+  @@index([name])
+}
+
+// ============================================================================
+// RESUME & RESUME VERSIONS
+// ============================================================================
+
+model Resume {
+  id               String   @id @default(cuid())
+  userId           String
+  name             String
+  originalFileName String
+  fileType         String   @default("pdf") // pdf, docx
+  storageKey       String   // Path for local storage, key for S3, etc
+  fileSize         Int      // bytes
+  mimeType         String
+  isDefault        Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relations
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  versions ResumeVersion[]
+
+  @@index([userId])
+  @@index([isDefault])
+}
+
+model ResumeVersion {
+  id            String    @id @default(cuid())
+  resumeId      String
+  versionNumber Int
+  filePath      String    // Storage location
+  source        String    @default("ORIGINAL") // ORIGINAL, TAILORED, IMPORTED, USER_EDITED, AI_GENERATED
+  changeSummary String?
+  extractedText String?   // Full text from PDF/DOCX parsing
+  parsedData    Json?     // Structured resume data
+  createdAt     DateTime  @default(now())
+
+  // Relations
+  resume       Resume        @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+  applications Application[]
+
+  @@unique([resumeId, versionNumber])
+  @@index([resumeId])
+}
+
+// ============================================================================
+// JOBS
+// ============================================================================
+
+model Job {
+  id                String   @id @default(cuid())
+  userId            String
+  externalId        String?  // From ATS (e.g., Greenhouse job ID)
+  source            String   @default("UNKNOWN") // GREENHOUSE, LEVER, ASHBY, WORKABLE, WORKDAY, etc
+  ats               String?  // ATS system identifier
+  url               String   @unique // Unique constraint to prevent duplicates
+  company           String
+  title             String
+  location          String?
+  description       String?
+  employmentType    String?  // FULL_TIME, PART_TIME, CONTRACT, INTERNSHIP
+  workMode          String?  // REMOTE, HYBRID, ONSITE
+  salaryMin         Int?
+  salaryMax         Int?
+  salaryCurrency    String   @default("USD")
+  requirements      Json?    // Array of requirement strings
+  responsibilities  Json?    // Array of responsibility strings
+  skills            Json?    // Array of skill strings
+  rawData           Json?    // Complete raw data from ATS
+  postedAt          DateTime?
+  discoveredAt      DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  createdAt         DateTime @default(now())
+
+  // Relations
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobMatches       JobMatch[]
+  applications     Application[]
+
+  @@index([userId])
+  @@index([company])
+  @@index([title])
+  @@index([ats])
+  @@index([source])
+  @@index([postedAt])
+  @@index([discoveredAt])
+}
+
+// ============================================================================
+// JOB MATCHING
+// ============================================================================
+
+model JobMatch {
+  id               String   @id @default(cuid())
+  userId           String
+  jobId            String
+  score            Int      // 0-100
+  skillsScore      Int?
+  experienceScore  Int?
+  educationScore   Int?
+  locationScore    Int?
+  authorizationScore Int?
+  roleScore        Int?
+  strengths        Json?    // Array of strength strings
+  gaps             Json?    // Array of gap strings
+  warnings         Json?    // Array of warning strings
+  explanation      String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  job  Job  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, jobId])
+  @@index([userId])
+  @@index([jobId])
+  @@index([score])
+}
+
+// ============================================================================
+// APPLICATION & APPLICATION WORKFLOW
+// ============================================================================
+
+enum ApplicationStatus {
+  DISCOVERED
+  MATCHED
+  PREPARING
+  FORM_INSPECTED
+  FORM_FILLED
+  READY_FOR_REVIEW
+  APPROVED
+  SUBMITTING
+  SUBMITTED
+  FAILED
+  WITHDRAWN
+  REJECTED
+  INTERVIEW
+  OFFER
+}
+
+model Application {
+  id                     String              @id @default(cuid())
+  userId                 String
+  jobId                  String
+  resumeVersionId        String
+  ats                    String              // GREENHOUSE, LEVER, etc
+  externalApplicationId  String?             // Application ID from ATS
+  applicationUrl         String?
+  status                 ApplicationStatus   @default(DISCOVERED)
+  startedAt              DateTime?
+  submittedAt            DateTime?
+  lastAttemptAt          DateTime?
+  errorCode              String?
+  errorMessage           String?
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+
+  // Relations
+  user              User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  job               Job                     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  resumeVersion     ResumeVersion           @relation(fields: [resumeVersionId], references: [id])
+  questions         ApplicationQuestion[]
+  events            ApplicationEvent[]
+  automationRun     AutomationRun?
+
+  @@index([userId])
+  @@index([jobId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// APPLICATION QUESTIONS & ANSWERS
+// ============================================================================
+
+model ApplicationQuestion {
+  id                String   @id @default(cuid())
+  applicationId     String
+  externalFieldId   String?  // ID from ATS form
+  label             String
+  normalizedLabel   String?
+  fieldType         String   @default("UNKNOWN") // TEXT, EMAIL, PHONE, TEXTAREA, SELECT, RADIO, CHECKBOX, FILE, DATE, NUMBER, UNKNOWN
+  required          Boolean  @default(false)
+  options           Json?    // Array of options for SELECT/RADIO/CHECKBOX
+  section           String?
+  locator           Json?    // CSS selector or other locator info
+  currentValue      String?
+  mappedSource      String?  // PROFILE, RESUME, SYSTEM
+  confidence        Float?   // 0.0-1.0
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  application Application         @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  answer      ApplicationAnswer?
+
+  @@index([applicationId])
+}
+
+model ApplicationAnswer {
+  id            String    @id @default(cuid())
+  questionId    String    @unique
+  answer        String?
+  source        String    @default("SYSTEM") // PROFILE, RESUME, USER_INPUT, AI, SYSTEM
+  confidence    Float?    // 0.0-1.0
+  groundedFacts Json?     // Array of facts from source
+  needsReview   Boolean   @default(false)
+  approved      Boolean   @default(false)
+  generatedAt   DateTime?
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  question ApplicationQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@index([questionId])
+}
+
+// ============================================================================
+// APPLICATION EVENT / AUDIT LOG
+// ============================================================================
+
+enum ApplicationEventType {
+  APPLICATION_CREATED
+  JOB_EXTRACTED
+  MATCH_CALCULATED
+  RESUME_SELECTED
+  RESUME_TAILORED
+  FORM_OPENED
+  FORM_INSPECTED
+  FIELD_MAPPED
+  ANSWER_GENERATED
+  FORM_FILLED
+  REVIEW_REQUESTED
+  REVIEW_APPROVED
+  SUBMISSION_STARTED
+  SUBMISSION_COMPLETED
+  SUBMISSION_FAILED
+  CAPTCHA_DETECTED
+  SECURITY_CHALLENGE
+  USER_INTERRUPTED
+  RETRY_STARTED
+  ERROR
+}
+
+model ApplicationEvent {
+  id            String                  @id @default(cuid())
+  applicationId String
+  userId        String
+  eventType     ApplicationEventType
+  status        ApplicationStatus?
+  message       String?
+  metadata      Json?
+  createdAt     DateTime                @default(now())
+
+  // Relations
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// AUTOMATION / BROWSER SESSION
+// ============================================================================
+
+enum AutomationRunStatus {
+  QUEUED
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model AutomationRun {
+  id            String                @id @default(cuid())
+  userId        String
+  applicationId String                @unique
+  provider      String                @default("PLAYWRIGHT")
+  status        AutomationRunStatus   @default(QUEUED)
+  startedAt     DateTime?
+  completedAt   DateTime?
+  errorMessage  String?
+  metadata      Json?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  // Relations
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+}

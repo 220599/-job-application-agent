@@ -1,2 +1,21 @@
-// Database placeholder index
-export {};
+export { prisma, default } from './client';
+export type {
+  User,
+  CandidateProfile,
+  Education,
+  Experience,
+  Skill,
+  Resume,
+  ResumeVersion,
+  Job,
+  JobMatch,
+  Application,
+  ApplicationQuestion,
+  ApplicationAnswer,
+  ApplicationEvent,
+  AutomationRun,
+  ApplicationStatus,
+  ApplicationEventType,
+  AutomationRunStatus,
+  WorkMode,
+} from '@prisma/client';

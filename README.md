@@ -217,7 +217,288 @@ npm run dev:worker         # Start workers only
 6. **Testing:** Unit tests for critical logic; mock pages for browser tests
 7. **Human-in-the-Loop:** V0.1 requires explicit approval before submission
 
-## Phases
+## Database Schema (PHASE 2)
+
+### Core Models
+
+**User**
+- Email (unique)
+- Name
+- Timestamps
+
+**CandidateProfile**
+- One-to-one relationship with User
+- Personal info (name, email, phone, location)
+- Work preferences (mode, locations, roles, salary)
+- Authorization status
+- Skills array
+- Education and Experience relationships
+
+**Education**
+- Institution, degree, field of study
+- Dates, GPA
+- Linked to CandidateProfile
+
+**Experience**
+- Company, title, location
+- Employment type
+- Start/end dates, currently working flag
+- Description
+- Linked to CandidateProfile
+
+**Skill**
+- Name (unique per candidate)
+- Category, proficiency level
+- Years of experience
+- Linked to CandidateProfile
+
+**Resume**
+- Multiple resumes per user
+- File metadata (name, type, size, MIME)
+- Storage key (for S3/R2/local storage)
+- Default flag
+- Version history relationship
+
+**ResumeVersion**
+- Version numbering
+- Source (ORIGINAL, TAILORED, USER_EDITED, AI_GENERATED)
+- Extracted text and parsed data (JSON)
+- Change summary
+
+**Job**
+- External ID and ATS identifier
+- Company, title, location
+- Description, requirements, responsibilities
+- Employment type, work mode
+- Salary range
+- Posted/discovered dates
+
+**JobMatch**
+- Unique per user-job pair
+- Match score (0-100)
+- Component scores (skills, experience, education, location, authorization, role)
+- Strengths, gaps, warnings
+- Explanation
+
+**Application**
+- State machine status enum
+- ATS type and external application ID
+- Resume version used
+- Timestamps (started, submitted, attempted, failed, etc.)
+- Error tracking
+
+**ApplicationQuestion**
+- Question label and normalized label
+- Field type (TEXT, EMAIL, PHONE, TEXTAREA, SELECT, RADIO, CHECKBOX, FILE, DATE, NUMBER, UNKNOWN)
+- Required flag
+- Options for select/radio/checkbox
+- Mapped source and confidence
+- Located on application form
+
+**ApplicationAnswer**
+- Answer text
+- Source (PROFILE, RESUME, USER_INPUT, AI, SYSTEM)
+- Confidence score (0-1)
+- Grounded facts (where answer came from)
+- Needs review flag
+- Approval flag
+
+**ApplicationEvent**
+- Audit trail for application lifecycle
+- Event type enum (APPLICATION_CREATED, FORM_INSPECTED, ANSWER_GENERATED, FORM_FILLED, REVIEW_REQUESTED, REVIEW_APPROVED, SUBMISSION_STARTED, SUBMISSION_COMPLETED, FAILED, CAPTCHA_DETECTED, SECURITY_CHALLENGE, etc.)
+- Status snapshot
+- Metadata (JSON)
+- Indexed for query performance
+
+**AutomationRun**
+- Browser automation session tracking
+- Status (QUEUED, RUNNING, PAUSED, COMPLETED, FAILED, CANCELLED)
+- Provider (PLAYWRIGHT)
+- Timestamps and error messages
+- Metadata for debugging
+
+## REST API Endpoints (PHASE 2)
+
+### Candidate Profile
+
+```
+GET    /api/candidate              Get profile
+POST   /api/candidate              Create profile
+PATCH  /api/candidate              Update profile
+```
+
+### Education
+
+```
+GET    /api/candidate/education              List all
+POST   /api/candidate/education              Create
+PATCH  /api/candidate/education/:id          Update
+DELETE /api/candidate/education/:id          Delete
+```
+
+### Experience
+
+```
+GET    /api/candidate/experience              List all
+POST   /api/candidate/experience              Create
+PATCH  /api/candidate/experience/:id          Update
+DELETE /api/candidate/experience/:id          Delete
+```
+
+### Skills
+
+```
+GET    /api/candidate/skills              List all
+POST   /api/candidate/skills              Create
+DELETE /api/candidate/skills/:id          Delete
+```
+
+### Resumes
+
+```
+GET    /api/resumes                List with pagination
+GET    /api/resumes/:id            Get with versions
+```
+
+### Jobs
+
+```
+GET    /api/jobs                   List with pagination
+GET    /api/jobs/:id               Get with matches
+```
+
+### Applications
+
+```
+GET    /api/applications                          List (filtered by status, paginated)
+GET    /api/applications/:id                      Get with questions, answers, events
+```
+
+## Database Setup & Development
+
+### Running Migrations
+
+```bash
+# Create migration from schema changes
+npm run db:migrate
+
+# Validate schema
+npm run db:validate
+
+# Generate Prisma client
+npm run db:generate
+```
+
+### Seeding Data
+
+```bash
+# Seed with development fixtures
+npm run db:seed
+```
+
+Seed data includes:
+- 1 development user
+- 1 candidate profile
+- 2 education records
+- 3 experience records
+- 10 skills
+- 2 resumes with versions
+- 3 jobs
+- 3 job matches
+- 2 applications with questions/answers
+- 5 application events
+- 1 automation run
+
+### Prisma Studio
+
+Open a GUI to browse and edit database:
+
+```bash
+npm run db:studio
+```
+
+## API Documentation
+
+### Response Format
+
+**Success:**
+```json
+{ "data": {...} }
+```
+
+**Collections with Pagination:**
+```json
+{
+  "data": [...],
+  "pagination": {
+    "page": 1,
+    "pageSize": 20,
+    "total": 100
+  }
+}
+```
+
+**Error:**
+```json
+{
+  "error": {
+    "code": "ERROR_CODE",
+    "message": "Human readable message",
+    "details": [...]
+  }
+}
+```
+
+### Authentication (Development)
+
+In PHASE 2, authentication is stubbed with a development user:
+
+```
+User ID: dev-user-123 (or DEV_USER_ID environment variable)
+```
+
+All API requests are scoped to this user. Real authentication will be implemented in a later phase.
+
+### Request Validation
+
+All endpoints validate request bodies using Zod. Invalid requests return 400 with validation details.
+
+## Performance Considerations
+
+- Indexes on frequently-queried fields (userId, jobId, createdAt, status, etc.)
+- Pagination on list endpoints (default 20 items per page, max 100)
+- Efficient includes to avoid N+1 queries
+- Proper relationships and cascade deletion
+
+## Development Workflow (PHASE 2)
+
+1. **Start infrastructure:**
+   ```bash
+   docker compose up -d
+   ```
+
+2. **Initialize database:**
+   ```bash
+   npm run db:migrate
+   npm run db:seed
+   ```
+
+3. **Run API server:**
+   ```bash
+   npm run dev:api
+   ```
+
+4. **Test endpoints:**
+   ```bash
+   curl http://localhost:3001/api/candidate
+   ```
+
+5. **View database:**
+   ```bash
+   npm run db:studio
+   ```
+
+
 
 ### PHASE 1: Project Scaffold & Docker ✓
 - Monorepo structure
@@ -227,13 +508,19 @@ npm run dev:worker         # Start workers only
 - Shared packages scaffold
 - Environment configuration
 
-### PHASE 2: Database Schema (Next)
-- Prisma schema design
-- User, CandidateProfile, Resume, Job, Application models
-- Migrations and seed data
-- Audit logging
+### PHASE 2: Database Schema & API ✓
+- Prisma schema with 15+ models
+- PostgreSQL relationships and migrations
+- Seed data with realistic development fixtures
+- REST API with CRUD endpoints
+- Zod validation for all inputs
+- Development authentication (DEV_USER_ID)
+- Error handling and logging
+- API Response format standardization
+- Candidate Profile, Education, Experience, Skills APIs
+- Resumes, Jobs, Applications APIs
 
-### PHASE 3: Candidate Profile & Resume
+### PHASE 3: Candidate Profile & Resume (Next)
 - Candidate profile management API
 - Resume upload (PDF, DOCX)
 - Resume parsing and extraction

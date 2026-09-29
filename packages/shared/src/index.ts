@@ -179,3 +179,6 @@ export interface Context {
   requestId: string;
   logger: ILogger;
 }
+
+// Export validation schemas
+export * from './validation';

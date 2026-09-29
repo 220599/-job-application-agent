@@ -3,15 +3,19 @@
   "version": "0.1.0",
   "description": "Prisma ORM and database schema",
   "private": true,
-  "main": "index.ts",
-  "types": "index.ts",
+  "main": "src/client.ts",
+  "types": "src/client.ts",
+  "prisma": {
+    "schema": "prisma/schema.prisma"
+  },
   "scripts": {
-    "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate dev",
-    "db:push": "prisma db push",
+    "db:generate": "prisma generate --schema prisma/schema.prisma",
+    "db:migrate": "prisma migrate dev --schema prisma/schema.prisma",
+    "db:push": "prisma db push --schema prisma/schema.prisma",
     "db:seed": "node prisma/seed.js",
-    "db:studio": "prisma studio",
-    "db:reset": "prisma migrate reset --force",
+    "db:studio": "prisma studio --schema prisma/schema.prisma",
+    "db:reset": "prisma migrate reset --force --schema prisma/schema.prisma",
+    "db:validate": "prisma validate --schema prisma/schema.prisma",
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
