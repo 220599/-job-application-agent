@@ -1,0 +1,2 @@
+// Database placeholder index
+export {};

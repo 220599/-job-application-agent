@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: jaa-postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-jaa_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-jaa_password}
+      POSTGRES_DB: ${DB_NAME:-jaa_dev}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - jaa-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: jaa-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - jaa-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  jaa-network:
+    driver: bridge

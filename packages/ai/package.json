@@ -1,0 +1,18 @@
+{
+  "name": "@jaa/ai",
+  "version": "0.1.0",
+  "description": "Pluggable AI provider abstraction",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jaa/shared": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "@jaa/database",
+  "version": "0.1.0",
+  "description": "Prisma ORM and database schema",
+  "private": true,
+  "main": "index.ts",
+  "types": "index.ts",
+  "scripts": {
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:push": "prisma db push",
+    "db:seed": "node prisma/seed.js",
+    "db:studio": "prisma studio",
+    "db:reset": "prisma migrate reset --force",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "prisma": "^5.7.0",
+    "typescript": "^5.3.3"
+  }
+}

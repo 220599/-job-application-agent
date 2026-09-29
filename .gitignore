@@ -1,0 +1,57 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build outputs
+.next
+out/
+build/
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+
+# Testing
+coverage/
+.nyc_output/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Database
+*.sqlite
+*.db
+
+# Browser
+browsers/
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/

@@ -1,0 +1,49 @@
+{
+  "name": "job-application-agent",
+  "version": "0.1.0",
+  "description": "Production-oriented SaaS job application automation platform",
+  "private": true,
+  "workspaces": [
+    "apps/web",
+    "apps/api",
+    "apps/worker",
+    "packages/database",
+    "packages/ai",
+    "packages/browser",
+    "packages/ats",
+    "packages/core",
+    "packages/greenhouse",
+    "packages/resume",
+    "packages/matching",
+    "packages/shared"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:web\" \"npm run dev:api\" \"npm run dev:worker\"",
+    "dev:web": "cd apps/web && npm run dev",
+    "dev:api": "cd apps/api && npm run dev",
+    "dev:worker": "cd apps/worker && npm run dev",
+    "build": "npm run build --workspaces",
+    "test": "npm test --workspaces",
+    "test:e2e": "npm run test:e2e --workspaces",
+    "db:migrate": "cd packages/database && npx prisma migrate dev",
+    "db:generate": "cd packages/database && npx prisma generate",
+    "db:seed": "cd packages/database && npx prisma db seed",
+    "db:studio": "cd packages/database && npx prisma studio",
+    "db:push": "cd packages/database && npx prisma db push",
+    "lint": "npm run lint --workspaces",
+    "type-check": "npm run type-check --workspaces",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "docker:ps": "docker compose ps"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "prettier": "^3.1.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}

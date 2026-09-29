@@ -1,0 +1,20 @@
+{
+  "name": "@jaa/greenhouse",
+  "version": "0.1.0",
+  "description": "Greenhouse ATS adapter",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@jaa/ats": "*",
+    "@jaa/browser": "*",
+    "@jaa/shared": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3"
+  }
+}
