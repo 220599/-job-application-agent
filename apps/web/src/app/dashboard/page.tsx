@@ -55,7 +55,7 @@ export default function DashboardPage() {
 
   const profile = profileData?.data;
   const skills = skillsData?.data ?? [];
-  const resumes = resumesData?.data ?? [];
+  const resumes = resumesData?.data?.data ?? [];
   const defaultResume = resumes.find((r) => r.isDefault);
 
   const profileCompleteness = calculateProfileCompleteness(profile || null, [], [], skills, resumes);

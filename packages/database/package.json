@@ -3,12 +3,13 @@
   "version": "0.1.0",
   "description": "Prisma ORM and database schema",
   "private": true,
-  "main": "src/client.ts",
-  "types": "src/client.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "prisma": {
     "schema": "prisma/schema.prisma"
   },
   "scripts": {
+    "build": "tsc",
     "db:generate": "prisma generate --schema prisma/schema.prisma",
     "db:migrate": "prisma migrate dev --schema prisma/schema.prisma",
     "db:push": "prisma db push --schema prisma/schema.prisma",

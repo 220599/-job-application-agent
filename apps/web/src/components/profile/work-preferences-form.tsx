@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { candidateApi } from '@/lib/api';
+import type { WorkMode } from '@jaa/shared';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui';
 import { Input, Label, Button } from '@/components/ui';
 import { Badge } from '@/components/ui';
@@ -12,11 +13,11 @@ interface WorkPreferencesFormProps {
   onError: (err: any) => void;
 }
 
-const WORK_MODE_OPTIONS = ['REMOTE', 'HYBRID', 'ONSITE', 'ANY'];
+const WORK_MODE_OPTIONS: WorkMode[] = ['REMOTE', 'HYBRID', 'ONSITE', 'ANY'];
 
 export function WorkPreferencesForm({ profile, onSuccess, onError }: WorkPreferencesFormProps) {
   const [isEditing, setIsEditing] = useState(false);
-  const [preferredWorkMode, setPreferredWorkMode] = useState<string>(profile?.preferredWorkMode || 'ANY');
+  const [preferredWorkMode, setPreferredWorkMode] = useState<WorkMode>(profile?.preferredWorkMode || 'ANY');
   const [preferredLocations, setPreferredLocations] = useState<string[]>(profile?.preferredLocations || []);
   const [desiredRoles, setDesiredRoles] = useState<string[]>(profile?.desiredRoles || []);
   const [desiredSalaryMin, setDesiredSalaryMin] = useState<number | ''>((profile?.desiredSalaryMin ?? '') as any);
@@ -93,7 +94,7 @@ export function WorkPreferencesForm({ profile, onSuccess, onError }: WorkPrefere
                     name="workMode"
                     value={mode}
                     checked={preferredWorkMode === mode}
-                    onChange={(e) => setPreferredWorkMode(e.target.value)}
+                    onChange={(e) => setPreferredWorkMode(e.target.value as WorkMode)}
                     disabled={!isEditing}
                     className="h-4 w-4"
                   />

@@ -12,6 +12,8 @@ import type {
   Resume,
   ResumeCreate,
   ResumeVersion,
+  Job,
+  JobCreate,
 } from '@jaa/shared';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
@@ -169,4 +171,19 @@ export const resumeApi = {
     }),
   getVersion: (id: string) =>
     fetchApi<ResumeVersion[]>(`/api/resumes/${id}/versions`),
+};
+
+// Job APIs
+export const jobsApi = {
+  list: (page = 1, pageSize = 10) =>
+    fetchApi<{
+      data: Job[];
+      pagination: { page: number; pageSize: number; total: number };
+    }>(`/api/jobs?page=${page}&pageSize=${pageSize}`),
+  get: (id: string) => fetchApi<Job>(`/api/jobs/${id}`),
+  create: (url: string) =>
+    fetchApi<Job>('/api/jobs', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    }),
 };

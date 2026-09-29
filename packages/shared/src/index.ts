@@ -36,53 +36,229 @@ export interface JobDescription {
   extractedAt: Date;
 }
 
+export type WorkMode = 'REMOTE' | 'HYBRID' | 'ONSITE' | 'ANY';
+
 export interface CandidateProfile {
   id: string;
   userId: string;
   firstName: string;
   lastName: string;
+  preferredName?: string;
   email: string;
-  phone: string;
-  location: string;
-  linkedIn?: string;
-  gitHub?: string;
-  portfolio?: string;
+  phone?: string;
+  location?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+  zipCode?: string;
+  linkedinUrl?: string;
+  githubUrl?: string;
+  portfolioUrl?: string;
+  websiteUrl?: string;
   workAuthorization: string;
   sponsorshipRequired: boolean;
-  yearsOfExperience: number;
-  preferredRoles: string[];
+  willingToRelocate: boolean;
+  preferredWorkMode: WorkMode;
   preferredLocations: string[];
-  remotePreference: 'onsite' | 'hybrid' | 'remote' | 'any';
-  salaryPreference?: {
-    min?: number;
-    max?: number;
-    currency?: string;
-  };
-  skills: string[];
-  education: Education[];
-  experience: Experience[];
+  desiredRoles: string[];
+  desiredSalaryMin?: number;
+  desiredSalaryMax?: number;
+  summary?: string;
   createdAt: Date;
   updatedAt: Date;
 }
 
+export interface CandidateProfileCreate {
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone?: string;
+  location?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+  zipCode?: string;
+  linkedinUrl?: string;
+  githubUrl?: string;
+  portfolioUrl?: string;
+  websiteUrl?: string;
+  workAuthorization?: string;
+  sponsorshipRequired?: boolean;
+  willingToRelocate?: boolean;
+  preferredWorkMode?: WorkMode;
+  preferredLocations?: string[];
+  desiredRoles?: string[];
+  desiredSalaryMin?: number;
+  desiredSalaryMax?: number;
+  summary?: string;
+}
+
+export interface CandidateProfileUpdate {
+  firstName?: string;
+  lastName?: string;
+  preferredName?: string;
+  email?: string;
+  phone?: string;
+  location?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+  zipCode?: string;
+  linkedinUrl?: string;
+  githubUrl?: string;
+  portfolioUrl?: string;
+  websiteUrl?: string;
+  workAuthorization?: string;
+  sponsorshipRequired?: boolean;
+  willingToRelocate?: boolean;
+  preferredWorkMode?: WorkMode;
+  preferredLocations?: string[];
+  desiredRoles?: string[];
+  desiredSalaryMin?: number;
+  desiredSalaryMax?: number;
+  summary?: string;
+}
+
 export interface Education {
   id: string;
+  candidateProfileId: string;
   institution: string;
   degree: string;
-  field: string;
-  graduationDate: Date;
-  grade?: string;
+  fieldOfStudy: string;
+  startDate: Date;
+  endDate?: Date;
+  gpa?: number;
+  description?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface EducationCreate {
+  institution: string;
+  degree: string;
+  fieldOfStudy: string;
+  startDate: Date;
+  endDate?: Date;
+  gpa?: number;
+  description?: string;
+}
+
+export interface EducationUpdate {
+  institution?: string;
+  degree?: string;
+  fieldOfStudy?: string;
+  startDate?: Date;
+  endDate?: Date;
+  gpa?: number;
+  description?: string;
 }
 
 export interface Experience {
   id: string;
+  candidateProfileId: string;
   company: string;
   title: string;
+  location?: string;
+  employmentType: string;
   startDate: Date;
   endDate?: Date;
-  currentlyWorking: boolean;
-  description: string;
-  skills: string[];
+  isCurrent: boolean;
+  description?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface ExperienceCreate {
+  company: string;
+  title: string;
+  location?: string;
+  employmentType?: string;
+  startDate: Date;
+  endDate?: Date;
+  isCurrent?: boolean;
+  description?: string;
+}
+
+export interface ExperienceUpdate {
+  company?: string;
+  title?: string;
+  location?: string;
+  employmentType?: string;
+  startDate?: Date;
+  endDate?: Date;
+  isCurrent?: boolean;
+  description?: string;
+}
+
+export interface Skill {
+  id: string;
+  candidateProfileId: string;
+  name: string;
+  category?: string;
+  proficiency: string;
+  yearsOfExperience?: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface SkillCreate {
+  name: string;
+  category?: string;
+  proficiency?: string;
+  yearsOfExperience?: number;
+}
+
+export interface Resume {
+  id: string;
+  userId: string;
+  name: string;
+  originalFileName: string;
+  fileType: string;
+  storageKey: string;
+  fileSize: number;
+  mimeType: string;
+  isDefault: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  versions?: ResumeVersion[];
+}
+
+export interface ResumeVersion {
+  id: string;
+  resumeId: string;
+  versionNumber: number;
+  filePath: string;
+  source: string;
+  changeSummary?: string;
+  extractedText?: string;
+  parsedData?: Record<string, unknown>;
+  createdAt: Date;
+}
+
+export interface Job {
+  id: string;
+  userId: string;
+  externalId?: string;
+  source: string;
+  ats?: string;
+  url: string;
+  company: string;
+  title: string;
+  location?: string;
+  description?: string;
+  employmentType?: string;
+  workMode?: string;
+  salaryMin?: number;
+  salaryMax?: number;
+  salaryCurrency: string;
+  requirements?: string[];
+  responsibilities?: string[];
+  skills?: string[];
+  rawData?: Record<string, unknown>;
+  postedAt?: Date;
+  discoveredAt: Date;
+  updatedAt: Date;
+  createdAt: Date;
 }
 
 export interface MatchResult {
@@ -182,3 +358,22 @@ export interface Context {
 
 // Export validation schemas
 export * from './validation';
+
+// Explicit re-exports for API route imports
+export {
+  candidateProfileCreateSchema,
+  candidateProfileUpdateSchema,
+  educationCreateSchema,
+  educationUpdateSchema,
+  experienceCreateSchema,
+  experienceUpdateSchema,
+  skillCreateSchema,
+  skillUpdateSchema,
+  resumeCreateSchema,
+  jobCreateSchema,
+  applicationCreateSchema,
+  applicationStatusEnum,
+  paginationSchema,
+  apiResponseSchema,
+  apiErrorSchema,
+} from './validation';

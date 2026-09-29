@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { educationApi } from '@/lib/api';
+import type { EducationUpdate } from '@jaa/shared';
 import { z } from 'zod';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui';
 import { Button, Input, Label, Textarea, Badge, Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui';
@@ -41,7 +42,7 @@ export function EducationSection({ profile, onSuccess, onError }: EducationSecti
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const createMutation = useMutation({
-    mutationFn: (data: EducationFormData) => educationApi.create(data),
+    mutationFn: (data: EducationFormData) => educationApi.create(data as any),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['candidate'] });
       setShowDialog(false);
@@ -107,7 +108,7 @@ export function EducationSection({ profile, onSuccess, onError }: EducationSecti
 
     if (editingEducation) {
       try {
-        await educationApi.update(editingEducation.id, formData);
+        await educationApi.update(editingEducation.id, formData as EducationUpdate);
         queryClient.invalidateQueries({ queryKey: ['candidate'] });
         setShowDialog(false);
         setFormData({

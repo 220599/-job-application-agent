@@ -23,12 +23,7 @@ export function MainLayout({
     { key: 'dashboard', label: 'Dashboard', href: '/dashboard' },
     { key: 'profile', label: 'Profile', href: '/profile' },
     { key: 'resumes', label: 'Resumes', href: '/resumes' },
-    {
-      key: 'jobs',
-      label: 'Jobs',
-      href: '/jobs',
-      disabled: true,
-    },
+    { key: 'jobs', label: 'Jobs', href: '/jobs' },
     {
       key: 'applications',
       label: 'Applications',

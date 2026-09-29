@@ -49,7 +49,7 @@ export function calculateProfileCompleteness(
       title: 'Professional Links',
       completed:
         !!profile.linkedinUrl ||
-        !!profile.gitHubUrl ||
+        !!profile.githubUrl ||
         !!profile.portfolioUrl ||
         !!profile.websiteUrl,
       weight: 10,
