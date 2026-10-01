@@ -31,6 +31,8 @@
       "@jaa/core/*": ["packages/core/*"],
       "@jaa/greenhouse": ["packages/greenhouse"],
       "@jaa/greenhouse/*": ["packages/greenhouse/*"],
+      "@jaa/lever": ["packages/lever"],
+      "@jaa/lever/*": ["packages/lever/*"],
       "@jaa/resume": ["packages/resume"],
       "@jaa/resume/*": ["packages/resume/*"],
       "@jaa/matching": ["packages/matching"],

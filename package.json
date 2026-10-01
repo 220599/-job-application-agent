@@ -13,6 +13,7 @@
     "packages/ats",
     "packages/core",
     "packages/greenhouse",
+    "packages/lever",
     "packages/resume",
     "packages/matching",
     "packages/shared"
