@@ -1,0 +1,20 @@
+FAKE RESUME - TEST DATA ONLY
+============================
+
+This file exists purely as an upload fixture for automated browser tests.
+It contains no real personal information.
+
+Name: Test Candidate
+Email: test.candidate@example.com
+Phone: (555) 010-0000
+
+Skills: Testing, Determinism, Playwright
+
+Experience
+----------
+QA Robot - Mock Corp (Jan 2099 - Present)
+- Submitted fake applications all day
+
+Education
+---------
+B.S. in Testing - Fixture University (2095 - 2099)

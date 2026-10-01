@@ -1,0 +1,130 @@
+import http from 'http';
+import type { AddressInfo } from 'net';
+
+/**
+ * Local mock ATS/application page (Phase 6 test fixture).
+ *
+ * Deterministic, runs on an ephemeral 127.0.0.1 port, no external services.
+ * The page contains: name, email, phone fields, a resume upload field and a
+ * submit button. Submission posts JSON to /submit which responds with
+ * {"status":"ok"} and the page displays "Application submitted successfully".
+ *
+ * NOTE: navigating here requires a browser launched with allowPrivateUrls
+ * (test-only capability); production browsers block loopback URLs.
+ */
+
+export interface MockSubmission {
+  name: string;
+  email: string;
+  phone: string;
+  resumeFileName: string | null;
+}
+
+export interface MockAtsServer {
+  url: string;
+  submissions: MockSubmission[];
+  close(): Promise<void>;
+}
+
+const PAGE_HTML = `<!DOCTYPE html>
+<html>
+<head>
+  <title>Mock ATS - Job Application</title>
+  <style>
+    body { font-family: sans-serif; max-width: 480px; margin: 40px auto; }
+    label { display: block; margin-top: 12px; font-weight: bold; }
+    input { width: 100%; padding: 6px; margin-top: 4px; }
+    button { margin-top: 16px; padding: 8px 20px; }
+    #status { margin-top: 16px; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>Mock ATS - Job Application</h1>
+  <form id="app-form">
+    <label for="name">Full Name</label>
+    <input id="name" name="name" type="text" />
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" />
+    <label for="phone">Phone</label>
+    <input id="phone" name="phone" type="tel" />
+    <label for="resume">Resume</label>
+    <input id="resume" name="resume" type="file" />
+    <button type="submit" id="submit-btn">Submit Application</button>
+  </form>
+  <div id="status" role="status"></div>
+  <script>
+    document.getElementById('app-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const payload = {
+        name: document.getElementById('name').value,
+        email: document.getElementById('email').value,
+        phone: document.getElementById('phone').value,
+        resumeFileName: document.getElementById('resume').files.length > 0
+          ? document.getElementById('resume').files[0].name
+          : null,
+      };
+      try {
+        const res = await fetch('/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        document.getElementById('status').textContent =
+          data.status === 'ok' ? 'Application submitted successfully' : 'Submission failed';
+      } catch (err) {
+        document.getElementById('status').textContent = 'Submission failed';
+      }
+    });
+  </script>
+</body>
+</html>`;
+
+export async function startMockAtsServer(): Promise<MockAtsServer> {
+  const submissions: MockSubmission[] = [];
+
+  const server = http.createServer((req, res) => {
+    if (req.method === 'GET' && (req.url === '/' || req.url?.startsWith('/?'))) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(PAGE_HTML);
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/submit') {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body);
+          submissions.push({
+            name: String(parsed.name ?? ''),
+            email: String(parsed.email ?? ''),
+            phone: String(parsed.phone ?? ''),
+            resumeFileName: parsed.resumeFileName ?? null,
+          });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'ok' }));
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'error' }));
+        }
+      });
+      return;
+    }
+    // Deterministic 404 page with a distinctive title
+    res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end('<html><head><title>Mock ATS - Not Found</title></head><body><h1>404</h1></body></html>');
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+
+  return {
+    url: `http://127.0.0.1:${port}`,
+    submissions,
+    close(): Promise<void> {
+      return new Promise((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    },
+  };
+}
