@@ -14,9 +14,20 @@ import type {
   ResumeVersion,
   Job,
   JobCreate,
+  JobMatchSummary,
 } from '@jaa/shared';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+export interface ResumeImportSummary {
+  profileUpdated: boolean;
+  createdProfile: boolean;
+  fieldsSet: string[];
+  skillsAdded: string[];
+  skillsSkippedExisting: number;
+  experienceAdded: number;
+  educationAdded: number;
+}
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4001';
 
 class ApiError extends Error {
   constructor(
@@ -32,7 +43,7 @@ class ApiError extends Error {
 async function fetchApi<T>(
   endpoint: string,
   options: RequestInit = {}
-): Promise<{ data: T }> {
+): Promise<T> {
   const response = await fetch(`${API_BASE}${endpoint}`, {
     headers: {
       'Content-Type': 'application/json',
@@ -56,19 +67,20 @@ async function fetchApi<T>(
   }
 
   const json = await response.json();
-  return json as { data: T };
+  // Return the raw response body (e.g. `{ data: X }` or `{ data: X[], pagination }`)
+  return json as T;
 }
 
 // Candidate Profile APIs
 export const candidateApi = {
-  get: () => fetchApi<CandidateProfile>('/api/candidate'),
+  get: () => fetchApi<{ data: CandidateProfile }>('/api/candidate'),
   create: (data: CandidateProfileCreate) =>
-    fetchApi<CandidateProfile>('/api/candidate', {
+    fetchApi<{ data: CandidateProfile }>('/api/candidate', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
   update: (data: CandidateProfileUpdate) =>
-    fetchApi<CandidateProfile>('/api/candidate', {
+    fetchApi<{ data: CandidateProfile }>('/api/candidate', {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
@@ -76,52 +88,52 @@ export const candidateApi = {
 
 // Education APIs
 export const educationApi = {
-  list: () => fetchApi<Education[]>('/api/candidate/education'),
+  list: () => fetchApi<{ data: Education[] }>('/api/candidate/education'),
   create: (data: EducationCreate) =>
-    fetchApi<Education>('/api/candidate/education', {
+    fetchApi<{ data: Education }>('/api/candidate/education', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
   update: (id: string, data: EducationUpdate) =>
-    fetchApi<Education>(`/api/candidate/education/${id}`, {
+    fetchApi<{ data: Education }>(`/api/candidate/education/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
   delete: (id: string) =>
-    fetchApi<{ id: string }>(`/api/candidate/education/${id}`, {
+    fetchApi<{ data: { id: string } }>(`/api/candidate/education/${id}`, {
       method: 'DELETE',
     }),
 };
 
 // Experience APIs
 export const experienceApi = {
-  list: () => fetchApi<Experience[]>('/api/candidate/experience'),
+  list: () => fetchApi<{ data: Experience[] }>('/api/candidate/experience'),
   create: (data: ExperienceCreate) =>
-    fetchApi<Experience>('/api/candidate/experience', {
+    fetchApi<{ data: Experience }>('/api/candidate/experience', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
   update: (id: string, data: ExperienceUpdate) =>
-    fetchApi<Experience>(`/api/candidate/experience/${id}`, {
+    fetchApi<{ data: Experience }>(`/api/candidate/experience/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
   delete: (id: string) =>
-    fetchApi<{ id: string }>(`/api/candidate/experience/${id}`, {
+    fetchApi<{ data: { id: string } }>(`/api/candidate/experience/${id}`, {
       method: 'DELETE',
     }),
 };
 
 // Skills APIs
 export const skillsApi = {
-  list: () => fetchApi<Skill[]>('/api/candidate/skills'),
+  list: () => fetchApi<{ data: Skill[] }>('/api/candidate/skills'),
   create: (data: { name: string; category?: string; proficiency?: string; yearsOfExperience?: number }) =>
-    fetchApi<Skill>('/api/candidate/skills', {
+    fetchApi<{ data: Skill }>('/api/candidate/skills', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
   delete: (id: string) =>
-    fetchApi<{ id: string }>(`/api/candidate/skills/${id}`, {
+    fetchApi<{ data: { id: string } }>(`/api/candidate/skills/${id}`, {
       method: 'DELETE',
     }),
 };
@@ -133,8 +145,11 @@ export const resumeApi = {
       data: Resume[];
       pagination: { page: number; pageSize: number; total: number };
     }>(`/api/resumes?page=${page}&pageSize=${pageSize}`),
-  get: (id: string) => fetchApi<Resume>(`/api/resumes/${id}`),
-  upload: async (file: File, name: string) => {
+  get: (id: string) => fetchApi<{ data: Resume }>(`/api/resumes/${id}`),
+  upload: async (
+    file: File,
+    name: string
+  ): Promise<{ data: Resume; importSummary: ResumeImportSummary | null }> => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('name', name);
@@ -147,7 +162,7 @@ export const resumeApi = {
     if (!response.ok) {
       let errorData: { error?: { code: string; message: string; details?: any[] } };
       try {
-        errorData = await response.json();
+      errorData = await response.json();
       } catch {
         errorData = {};
       }
@@ -159,31 +174,46 @@ export const resumeApi = {
       );
     }
 
-    return response.json();
+    const json = await response.json();
+    return { data: json.data, importSummary: json.importSummary ?? null };
   },
+  reimport: (id: string) =>
+    fetchApi<{ data: { parsed: unknown; importResult: ResumeImportSummary } }>(
+      `/api/resumes/${id}/reimport`,
+      { method: 'POST' }
+    ),
   setDefault: (id: string) =>
-    fetchApi<Resume>(`/api/resumes/${id}/set-default`, {
+    fetchApi<{ data: Resume }>(`/api/resumes/${id}/set-default`, {
       method: 'PATCH',
     }),
   delete: (id: string) =>
-    fetchApi<{ id: string }>(`/api/resumes/${id}`, {
+    fetchApi<{ data: { id: string } }>(`/api/resumes/${id}`, {
       method: 'DELETE',
     }),
   getVersion: (id: string) =>
-    fetchApi<ResumeVersion[]>(`/api/resumes/${id}/versions`),
+    fetchApi<{ data: ResumeVersion[] }>(`/api/resumes/${id}/versions`),
 };
 
 // Job APIs
+export type JobSortBy = 'discoveredAt' | 'matchScore';
+
 export const jobsApi = {
-  list: (page = 1, pageSize = 10) =>
+  list: (page = 1, pageSize = 10, sortBy: JobSortBy = 'discoveredAt') =>
     fetchApi<{
       data: Job[];
       pagination: { page: number; pageSize: number; total: number };
-    }>(`/api/jobs?page=${page}&pageSize=${pageSize}`),
-  get: (id: string) => fetchApi<Job>(`/api/jobs/${id}`),
+    }>(`/api/jobs?page=${page}&pageSize=${pageSize}&sortBy=${sortBy}`),
+  get: (id: string) => fetchApi<{ data: Job }>(`/api/jobs/${id}`),
   create: (url: string) =>
-    fetchApi<Job>('/api/jobs', {
+    fetchApi<{ data: Job }>('/api/jobs', {
       method: 'POST',
       body: JSON.stringify({ url }),
     }),
+  // Matching (Phase 5)
+  calculateMatch: (jobId: string) =>
+    fetchApi<{ data: JobMatchSummary }>(`/api/jobs/${jobId}/match`, {
+      method: 'POST',
+    }),
+  getMatch: (jobId: string) =>
+    fetchApi<{ data: JobMatchSummary }>(`/api/jobs/${jobId}/match`),
 };

@@ -236,11 +236,14 @@ function extractGreenhouse($: cheerio.CheerioAPI): ExtractedJobData {
     attr('meta[property="og:title"]', 'content') ||
     null;
 
-  // Company from logo alt or link
+  // Company from logo alt or link. Handles both Greenhouse logo DOM variants:
+  //  - <div class="logo"><img alt="Acme Logo"/></div>  (older boards)
+  //  - <img class="logo" alt="Acme Logo"/>             (current boards)
   const company = 
-    attr('.job-post-container .image-container .logo img', 'alt')?.replace(' Logo', '') ||
+    attr('.job-post-container .image-container img.logo, .job-post-container .image-container .logo img', 'alt')?.replace(' Logo', '') ||
     attr('.job-post-container .image-container .logo', 'href')?.split('/').pop()?.replace(/-/g, ' ') ||
     attr('meta[property="og:site_name"]', 'content') ||
+    $('title').first().text().match(/Job Application for .+ at (.+)$/i)?.[1]?.trim() ||
     null;
 
   // Location from Greenhouse-specific structure

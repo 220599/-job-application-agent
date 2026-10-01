@@ -127,6 +127,7 @@ export const jobCreateSchema = z.object({
   source: z.string().default('UNKNOWN'),
   ats: z.string().optional(),
   url: z.string().url(),
+  applicationUrl: z.string().url().optional(),
   company: z.string().min(1),
   title: z.string().min(1),
   location: z.string().optional(),

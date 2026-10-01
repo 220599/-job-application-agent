@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { jobsApi } from '@/lib/api';
+import { jobsApi, type JobSortBy } from '@/lib/api';
+import type { JobMatchSummary } from '@jaa/shared';
 import {
   Card,
   CardContent,
@@ -16,11 +17,18 @@ import {
   Label,
 } from '@/components/ui';
 import { AlertDialog, AlertDialogTrigger, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from '@/components/ui';
-import { Plus, Trash2, ExternalLink, Search, Loader2, Briefcase } from 'lucide-react';
+import { Plus, Trash2, ExternalLink, Search, Loader2, Briefcase, Sparkles } from 'lucide-react';
+
+function scoreBadgeClass(score: number): string {
+  if (score >= 80) return 'bg-green-500/15 text-green-600 dark:text-green-400';
+  if (score >= 60) return 'bg-amber-500/15 text-amber-600 dark:text-amber-400';
+  return 'bg-red-500/15 text-red-600 dark:text-red-400';
+}
 
 export default function JobsPage() {
   const queryClient = useQueryClient();
   const [url, setUrl] = useState('');
+  const [sortBy, setSortBy] = useState<JobSortBy>('discoveredAt');
   const [urlError, setUrlError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -31,11 +39,21 @@ export default function JobsPage() {
     error,
     refetch,
   } = useQuery({
-    queryKey: ['jobs'],
-    queryFn: () => jobsApi.list(),
+    queryKey: ['jobs', sortBy],
+    queryFn: () => jobsApi.list(1, 20, sortBy),
   });
 
-  const jobs = jobsData?.data?.data ?? [];
+  const jobs = jobsData?.data ?? [];
+
+  const matchMutation = useMutation({
+    mutationFn: (jobId: string) => jobsApi.calculateMatch(jobId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['jobs'] });
+    },
+    onError: (err: any) => {
+      setErrorMessage(err?.message || 'Failed to calculate match');
+    },
+  });
 
   const importMutation = useMutation({
     mutationFn: (url: string) => jobsApi.create(url),
@@ -44,6 +62,10 @@ export default function JobsPage() {
       setUrl('');
       setUrlError(null);
       setSuccessMessage(response.data ? 'Job imported successfully' : 'Job already exists');
+      // Automatically compute the match for the freshly imported job.
+      if (response.data?.id) {
+        matchMutation.mutate(response.data.id);
+      }
     },
     onError: (err: any) => {
       setUrlError(err?.message || 'Failed to import job');
@@ -101,6 +123,51 @@ export default function JobsPage() {
     return text.length > length ? text.slice(0, length) + '...' : text;
   };
 
+  const renderMatchSection = (match: JobMatchSummary) => (
+    <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+      <div className="flex items-start gap-2 flex-wrap">
+        <span
+          className={`inline-flex items-center px-2 py-0.5 rounded text-sm font-semibold ${scoreBadgeClass(match.score)}`}
+        >
+          {match.score}% match
+        </span>
+        {match.explanation && (
+          <span className="text-xs text-muted-foreground flex-1 min-w-[200px]">
+            {match.explanation}
+          </span>
+        )}
+      </div>
+      {(match.matchedSkills?.length ?? 0) > 0 && (
+        <div>
+          <p className="text-xs font-medium mb-1">Matched skills</p>
+          <div className="flex flex-wrap gap-1">
+            {match.matchedSkills!.slice(0, 10).map((s) => (
+              <Badge key={s} variant="secondary">{s}</Badge>
+            ))}
+            {match.matchedSkills!.length > 10 && (
+              <Badge variant="secondary">+{match.matchedSkills!.length - 10} more</Badge>
+            )}
+          </div>
+        </div>
+      )}
+      {(match.missingSkills?.length ?? 0) > 0 && (
+        <div>
+          <p className="text-xs font-medium mb-1">Missing skills</p>
+          <div className="flex flex-wrap gap-1">
+            {match.missingSkills!.slice(0, 10).map((s) => (
+              <Badge key={s} variant="outline" className="text-destructive border-destructive/40">
+                {s}
+              </Badge>
+            ))}
+            {match.missingSkills!.length > 10 && (
+              <Badge variant="outline">+{match.missingSkills!.length - 10} more</Badge>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   if (isLoading) {
     return (
       <div className="space-y-6">
@@ -151,12 +218,28 @@ export default function JobsPage() {
     );
   }
 
+  const anyMatch = jobs.some((job) => (job.jobMatches?.length ?? 0) > 0);
+
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Jobs</h1>
           <p className="text-muted-foreground">Import and manage job postings</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Label htmlFor="jobs-sort" className="text-sm text-muted-foreground">
+            Sort by
+          </Label>
+          <select
+            id="jobs-sort"
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as JobSortBy)}
+            className="h-9 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            <option value="discoveredAt">Recently imported</option>
+            <option value="matchScore">Best match</option>
+          </select>
         </div>
       </div>
 
@@ -224,6 +307,15 @@ export default function JobsPage() {
         </CardContent>
       </Card>
 
+      {/* Hint when sorting by match but nothing has been analyzed yet */}
+      {sortBy === 'matchScore' && jobs.length > 0 && !anyMatch && (
+        <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground flex items-center gap-2">
+          <Sparkles className="h-4 w-4" />
+          No matches calculated yet. Click &quot;Analyze match&quot; on a job below to compute its
+          match score against your profile.
+        </div>
+      )}
+
       {/* Jobs List */}
       {jobs.length === 0 ? (
         <Card>
@@ -237,146 +329,177 @@ export default function JobsPage() {
         </Card>
       ) : (
         <div className="space-y-4">
-          {jobs.map((job) => (
-            <Card key={job.id}>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <div className="flex items-center gap-4">
-                  <div className="flex-1 min-w-0">
-                    <CardTitle className="truncate">{job.title}</CardTitle>
-                    <CardDescription className="flex items-center gap-3 flex-wrap">
-                      <span className="font-medium">{job.company}</span>
-                      {job.location && (
-                        <Badge variant="outline">{job.location}</Badge>
-                      )}
-                      <Badge variant="outline">{job.source}</Badge>
-                      {job.workMode && (
-                        <Badge variant="secondary">{job.workMode}</Badge>
-                      )}
-                      {job.employmentType && (
-                        <Badge variant="outline">{job.employmentType}</Badge>
-                      )}
-                      {job.salaryMin && job.salaryMax && (
-                        <Badge variant="outline">
-                          ${job.salaryMin.toLocaleString()} - ${job.salaryMax.toLocaleString()} {job.salaryCurrency}
-                        </Badge>
-                      )}
-                      <span className="text-xs text-muted-foreground">
-                        Imported: {formatDate(job.discoveredAt)}
-                      </span>
-                    </CardDescription>
+          {jobs.map((job) => {
+            const match = job.jobMatches?.[0];
+            return (
+              <Card key={job.id}>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <div className="flex items-center gap-4">
+                    <div className="flex-1 min-w-0">
+                      <CardTitle className="truncate flex items-center gap-2">
+                        {match && (
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold shrink-0 ${scoreBadgeClass(match.score)}`}
+                          >
+                            {match.score}% match
+                          </span>
+                        )}
+                        <span className="truncate">{job.title}</span>
+                      </CardTitle>
+                      <CardDescription className="flex items-center gap-3 flex-wrap">
+                        <span className="font-medium">{job.company}</span>
+                        {job.location && (
+                          <Badge variant="outline">{job.location}</Badge>
+                        )}
+                        <Badge variant="outline">{job.source}</Badge>
+                        {job.workMode && (
+                          <Badge variant="secondary">{job.workMode}</Badge>
+                        )}
+                        {job.employmentType && (
+                          <Badge variant="outline">{job.employmentType}</Badge>
+                        )}
+                        {job.salaryMin && job.salaryMax && (
+                          <Badge variant="outline">
+                            ${job.salaryMin.toLocaleString()} - ${job.salaryMax.toLocaleString()} {job.salaryCurrency}
+                          </Badge>
+                        )}
+                        <span className="text-xs text-muted-foreground">
+                          Imported: {formatDate(job.discoveredAt)}
+                        </span>
+                      </CardDescription>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => matchMutation.mutate(job.id)}
+                        disabled={matchMutation.isPending && matchMutation.variables === job.id}
+                      >
+                        {matchMutation.isPending && matchMutation.variables === job.id ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                            Analyzing...
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="h-4 w-4 mr-1" />
+                            {match ? 'Re-analyze' : 'Analyze match'}
+                          </>
+                        )}
+                      </Button>
+                      <a
+                        href={job.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-primary hover:underline flex items-center gap-1"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                        View Posting
+                      </a>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive hover:text-destructive"
+                            disabled={deleteMutation.isPending}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            <span className="sr-only">Delete job</span>
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This will permanently delete "{job.title}" at {job.company}. This action cannot be undone.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction onClick={() => deleteMutation.mutate(job.id)}>Delete</AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <a
-                      href={job.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-sm text-primary hover:underline flex items-center gap-1"
-                    >
-                      <ExternalLink className="h-3 w-3" />
-                      View Posting
-                    </a>
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-destructive hover:text-destructive"
-                          disabled={deleteMutation.isPending}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                          <span className="sr-only">Delete job</span>
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            This will permanently delete "{job.title}" at {job.company}. This action cannot be undone.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction onClick={() => deleteMutation.mutate(job.id)}>Delete</AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  {job.description && (
-                    <div>
-                      <h4 className="text-sm font-medium">Description</h4>
-                      <p className="text-sm text-muted-foreground whitespace-pre-line">
-                        {truncate(job.description, 300)}
-                      </p>
-                    </div>
-                  )}
-                  {(job.requirements && job.requirements.length > 0) && (
-                    <div>
-                      <h4 className="text-sm font-medium">Requirements</h4>
-                      <ul className="text-sm text-muted-foreground list-disc list-inside space-y-1">
-                        {job.requirements.slice(0, 5).map((req, i) => (
-                          <li key={i}>{req}</li>
-                        ))}
-                        {job.requirements.length > 5 && (
-                          <li className="text-xs">+ {job.requirements.length - 5} more</li>
-                        )}
-                      </ul>
-                    </div>
-                  )}
-                  {(job.responsibilities && job.responsibilities.length > 0) && (
-                    <div>
-                      <h4 className="text-sm font-medium">Responsibilities</h4>
-                      <ul className="text-sm text-muted-foreground list-disc list-inside space-y-1">
-                        {job.responsibilities.slice(0, 5).map((resp, i) => (
-                          <li key={i}>{resp}</li>
-                        ))}
-                        {job.responsibilities.length > 5 && (
-                          <li className="text-xs">+ {job.responsibilities.length - 5} more</li>
-                        )}
-                      </ul>
-                    </div>
-                  )}
-                  {(job.skills && job.skills.length > 0) && (
-                    <div>
-                      <h4 className="text-sm font-medium">Skills</h4>
-                      <div className="flex flex-wrap gap-1">
-                        {job.skills.slice(0, 10).map((skill, i) => (
-                          <Badge key={i} variant="outline">{skill}</Badge>
-                        ))}
-                        {job.skills.length > 10 && (
-                          <Badge variant="outline">+ {job.skills.length - 10} more</Badge>
-                        )}
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-3">
+                    {match && renderMatchSection(match)}
+                    {job.description && (
+                      <div>
+                        <h4 className="text-sm font-medium">Description</h4>
+                        <p className="text-sm text-muted-foreground whitespace-pre-line">
+                          {truncate(job.description, 300)}
+                        </p>
                       </div>
+                    )}
+                    {(job.requirements && job.requirements.length > 0) && (
+                      <div>
+                        <h4 className="text-sm font-medium">Requirements</h4>
+                        <ul className="text-sm text-muted-foreground list-disc list-inside space-y-1">
+                          {job.requirements.slice(0, 5).map((req, i) => (
+                            <li key={i}>{req}</li>
+                          ))}
+                          {job.requirements.length > 5 && (
+                            <li className="text-xs">+ {job.requirements.length - 5} more</li>
+                          )}
+                        </ul>
+                      </div>
+                    )}
+                    {(job.responsibilities && job.responsibilities.length > 0) && (
+                      <div>
+                        <h4 className="text-sm font-medium">Responsibilities</h4>
+                        <ul className="text-sm text-muted-foreground list-disc list-inside space-y-1">
+                          {job.responsibilities.slice(0, 5).map((resp, i) => (
+                            <li key={i}>{resp}</li>
+                          ))}
+                          {job.responsibilities.length > 5 && (
+                            <li className="text-xs">+ {job.responsibilities.length - 5} more</li>
+                          )}
+                        </ul>
+                      </div>
+                    )}
+                    {(job.skills && job.skills.length > 0) && (
+                      <div>
+                        <h4 className="text-sm font-medium">Skills</h4>
+                        <div className="flex flex-wrap gap-1">
+                          {job.skills.slice(0, 10).map((skill, i) => (
+                            <Badge key={i} variant="outline">{skill}</Badge>
+                          ))}
+                          {job.skills.length > 10 && (
+                            <Badge variant="outline">+ {job.skills.length - 10} more</Badge>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {job.externalId && (
+                      <div className="text-xs text-muted-foreground">
+                        External ID: {job.externalId}
+                      </div>
+                    )}
+                    {job.postedAt && (
+                      <div className="text-xs text-muted-foreground">
+                        Posted: {formatDate(job.postedAt)}
+                      </div>
+                    )}
+                    <div className="pt-2 border-t">
+                      <a
+                        href={job.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-primary hover:underline flex items-center gap-1"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                        View Original Posting
+                      </a>
                     </div>
-                  )}
-                  {job.externalId && (
-                    <div className="text-xs text-muted-foreground">
-                      External ID: {job.externalId}
-                    </div>
-                  )}
-                  {job.postedAt && (
-                    <div className="text-xs text-muted-foreground">
-                      Posted: {formatDate(job.postedAt)}
-                    </div>
-                  )}
-                  <div className="pt-2 border-t">
-                    <a
-                      href={job.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-sm text-primary hover:underline flex items-center gap-1"
-                    >
-                      <ExternalLink className="h-3 w-3" />
-                      View Original Posting
-                    </a>
                   </div>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       )}
     </div>

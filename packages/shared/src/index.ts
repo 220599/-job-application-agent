@@ -235,6 +235,39 @@ export interface ResumeVersion {
   createdAt: Date;
 }
 
+export interface MatchCriterion {
+  criterion: string;
+  status: 'MET' | 'PARTIAL' | 'UNMET' | 'NOT_APPLICABLE';
+  detail: string;
+}
+
+/**
+ * Deterministic match result stored in the JobMatch table.
+ * Field names follow the API shape: `score` is the overall 0-100 match,
+ * factor scores are null when that factor could not be evaluated.
+ */
+export interface JobMatchSummary {
+  id: string;
+  jobId: string;
+  userId: string;
+  score: number;
+  skillsScore?: number | null;
+  roleScore?: number | null;
+  experienceScore?: number | null;
+  locationScore?: number | null;
+  salaryScore?: number | null;
+  authorizationScore?: number | null;
+  matchedSkills?: string[] | null;
+  missingSkills?: string[] | null;
+  matchedCriteria?: MatchCriterion[] | null;
+  strengths?: string[] | null;
+  gaps?: string[] | null;
+  warnings?: string[] | null;
+  explanation?: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
 export interface Job {
   id: string;
   userId: string;
@@ -242,6 +275,7 @@ export interface Job {
   source: string;
   ats?: string;
   url: string;
+  applicationUrl?: string;
   company: string;
   title: string;
   location?: string;
@@ -259,6 +293,8 @@ export interface Job {
   discoveredAt: Date;
   updatedAt: Date;
   createdAt: Date;
+  /** Included by the jobs list/detail endpoints for the current user */
+  jobMatches?: JobMatchSummary[];
 }
 
 export interface MatchResult {

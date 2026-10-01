@@ -31,6 +31,7 @@ export const errorHandler = (
   res: Response,
   _next: NextFunction
 ) => {
+  console.error('[ERROR HANDLER]', err.message, err.stack);
   logger.error('API Error', err, {
     requestId: req.requestId,
     userId: req.userId,
@@ -66,5 +67,9 @@ export const errorHandler = (
 export const asyncHandler =
   (fn: (req: Request, res: Response, next: NextFunction) => Promise<any>) =>
   (req: Request, res: Response, next: NextFunction) => {
-    Promise.resolve(fn(req, res, next)).catch(next);
+    console.log(`[ASYNC HANDLER] ${req.method} ${req.path}`);
+    Promise.resolve(fn(req, res, next)).catch((err) => {
+      console.error('[ASYNC HANDLER ERROR]', err.message, err.stack);
+      next(err);
+    });
   };

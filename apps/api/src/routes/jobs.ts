@@ -3,10 +3,35 @@ import { prisma } from '@jaa/database';
 import { paginationSchema, jobCreateSchema } from '@jaa/shared';
 import { asyncHandler } from '../middleware/auth';
 import { ingestJobFromUrl } from '../services/job-ingestion';
+import {
+  calculateJobMatch,
+  getJobMatch,
+  listJobMatches,
+  MatchServiceError,
+} from '../services/job-matching';
 
 const router = Router();
 
 const ingestSchema = jobCreateSchema.pick({ url: true });
+
+const MATCH_ERROR_STATUS: Record<string, number> = {
+  JOB_NOT_FOUND: 404,
+  PROFILE_NOT_FOUND: 400,
+  MATCH_NOT_FOUND: 404,
+};
+
+function respondMatchError(res: Response, error: unknown): void {
+  if (error instanceof MatchServiceError) {
+    res.status(MATCH_ERROR_STATUS[error.code] ?? 500).json({
+      error: {
+        code: error.code,
+        message: error.message,
+      },
+    });
+    return;
+  }
+  throw error;
+}
 
 // POST /api/jobs - Ingest job from URL
 router.post(
@@ -60,12 +85,34 @@ router.post(
   })
 );
 
-// GET /api/jobs - List jobs
+// GET /api/jobs - List jobs (optionally sorted by match score)
 router.get(
   '/',
   asyncHandler(async (req: Request, res: Response) => {
     const userId = req.userId!;
     const { page, pageSize } = paginationSchema.parse(req.query);
+    const sortBy = req.query.sortBy === 'matchScore' ? 'matchScore' : 'discoveredAt';
+
+    if (sortBy === 'matchScore') {
+      // Sort by the user's best match score; jobs without a match go last.
+      const jobs = await prisma.job.findMany({
+        where: { userId },
+        include: { jobMatches: { where: { userId } } },
+        orderBy: { discoveredAt: 'desc' },
+        take: 500,
+      });
+      jobs.sort((a, b) => {
+        const aScore = a.jobMatches[0]?.score ?? -1;
+        const bScore = b.jobMatches[0]?.score ?? -1;
+        return bScore - aScore;
+      });
+      const total = jobs.length;
+      const paged = jobs.slice((page - 1) * pageSize, page * pageSize);
+      return res.json({
+        data: paged,
+        pagination: { page, pageSize, total },
+      });
+    }
 
     const [jobs, total] = await Promise.all([
       prisma.job.findMany({
@@ -92,6 +139,47 @@ router.get(
         total,
       },
     });
+  })
+);
+
+// GET /api/jobs/matches - The user's matches ordered by score (registered before /:id)
+router.get(
+  '/matches',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const matches = await listJobMatches(userId);
+    res.json({ data: matches });
+  })
+);
+
+// POST /api/jobs/:jobId/match - Calculate or recalculate the match for the current user
+router.post(
+  '/:jobId/match',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = req.userId!;
+    try {
+      const match = await calculateJobMatch(userId, req.params.jobId);
+      res.status(201).json({
+        data: match,
+        message: 'Match calculated',
+      });
+    } catch (error) {
+      respondMatchError(res, error);
+    }
+  })
+);
+
+// GET /api/jobs/:jobId/match - Detailed stored match for one job
+router.get(
+  '/:jobId/match',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = req.userId!;
+    try {
+      const match = await getJobMatch(userId, req.params.jobId);
+      res.json({ data: match });
+    } catch (error) {
+      respondMatchError(res, error);
+    }
   })
 );
 

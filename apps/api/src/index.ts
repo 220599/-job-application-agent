@@ -1,5 +1,7 @@
 import express from 'express';
 import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -15,18 +17,23 @@ import resumesRoutes from './routes/resumes';
 import jobsRoutes from './routes/jobs';
 import applicationsRoutes from './routes/applications';
 
+// Load env vars: local apps/api/.env first, then repo root .env (no override)
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config();
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 const app = express();
-const PORT = process.env.API_PORT || 3001;
+const PORT = process.env.API_PORT || 4001;
 
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (reason, promise) => {
   logger.error('Unhandled Rejection', reason, { promise });
+  console.error('UNHANDLED REJECTION:', reason);
 });
 
 process.on('uncaughtException', (error) => {
   logger.error('Uncaught Exception', error);
+  console.error('UNCAUGHT EXCEPTION:', error);
   process.exit(1);
 });
 
@@ -34,6 +41,7 @@ process.on('uncaughtException', (error) => {
 app.use(cors());
 app.use(express.json());
 app.use((req, res, next) => {
+  console.log(`[REQUEST] ${req.method} ${req.path}`);
   req.requestId = (req.headers['x-request-id'] as string) || uuidv4();
   next();
 });
@@ -67,6 +75,7 @@ app.use('/api/applications', applicationsRoutes);
 
 // 404 handler
 app.use((req, res) => {
+  console.log(`[404] ${req.method} ${req.path}`);
   res.status(404).json({
     error: {
       code: 'NOT_FOUND',

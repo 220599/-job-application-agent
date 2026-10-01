@@ -204,6 +204,7 @@ model Job {
   source            String   @default("UNKNOWN") // GREENHOUSE, LEVER, ASHBY, WORKABLE, WORKDAY, etc
   ats               String?  // ATS system identifier
   url               String   @unique // Unique constraint to prevent duplicates
+  applicationUrl    String?  // Direct link to the application form (e.g. Greenhouse submitPath)
   company           String
   title             String
   location          String?
@@ -244,16 +245,20 @@ model JobMatch {
   id               String   @id @default(cuid())
   userId           String
   jobId            String
-  score            Int      // 0-100
+  score            Int      // 0-100 (overall match score)
   skillsScore      Int?
   experienceScore  Int?
   educationScore   Int?
   locationScore    Int?
   authorizationScore Int?
   roleScore        Int?
+  salaryScore      Int?     // 0-100, null when salary not comparable
   strengths        Json?    // Array of strength strings
   gaps             Json?    // Array of gap strings
-  warnings         Json?    // Array of warning strings
+  warnings         Json?    // Array of concern strings
+  matchedSkills    Json?    // Array of matched skill names
+  missingSkills    Json?    // Array of required skills not on the profile
+  matchedCriteria  Json?    // Array of { criterion, status, detail }
   explanation      String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt

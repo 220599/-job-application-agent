@@ -47,19 +47,34 @@ export default function ResumesPage() {
     queryFn: () => resumeApi.list(),
   });
 
-  const resumes = resumesData?.data?.data ?? [];
-  const pagination = resumesData?.data?.pagination;
+  const resumes = resumesData?.data ?? [];
+  const pagination = resumesData?.pagination;
 
   const uploadMutation = useMutation({
     mutationFn: ({ file, name }: { file: File; name: string }) => resumeApi.upload(file, name),
-    onSuccess: () => {
+    onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: ['resumes'] });
       queryClient.invalidateQueries({ queryKey: ['candidate'] });
+      queryClient.invalidateQueries({ queryKey: ['skills'] });
       setShowUploadDialog(false);
       setUploadFile(null);
       setUploadName('');
       setUploadError(null);
-      setSuccessMessage('Resume uploaded successfully');
+      const s = response.importSummary;
+      if (s) {
+        const parts: string[] = [];
+        if (s.fieldsSet.length > 0) parts.push(`${s.fieldsSet.length} profile field(s)`);
+        if (s.skillsAdded.length > 0) parts.push(`${s.skillsAdded.length} skill(s)`);
+        if (s.experienceAdded > 0) parts.push(`${s.experienceAdded} experience entr${s.experienceAdded === 1 ? 'y' : 'ies'}`);
+        if (s.educationAdded > 0) parts.push(`${s.educationAdded} education entr${s.educationAdded === 1 ? 'y' : 'ies'}`);
+        setSuccessMessage(
+          parts.length > 0
+            ? `Resume uploaded. Auto-filled your profile from it: ${parts.join(', ')} (only empty fields were filled).`
+            : 'Resume uploaded. Your profile was already up to date - nothing new to import.'
+        );
+      } else {
+        setSuccessMessage('Resume uploaded successfully');
+      }
     },
     onError: (err: any) => {
       setUploadError(err?.message || 'Upload failed');

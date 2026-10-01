@@ -109,8 +109,8 @@ npm run dev
 
 ### 5. Access Application
 
-- Frontend: http://localhost:3000
-- API: http://localhost:3001
+- Frontend: http://localhost:4000
+- API: http://localhost:4001
 - Prisma Studio: `npm run db:studio` → http://localhost:5555
 
 ## Environment Variables
@@ -490,7 +490,7 @@ All endpoints validate request bodies using Zod. Invalid requests return 400 wit
 
 4. **Test endpoints:**
    ```bash
-   curl http://localhost:3001/api/candidate
+   curl http://localhost:4001/api/candidate
    ```
 
 5. **View database:**
