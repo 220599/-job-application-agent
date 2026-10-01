@@ -11,7 +11,8 @@
   "dependencies": {
     "@jaa/database": "*",
     "@jaa/shared": "*",
-    "@jaa/ats": "*"
+    "@jaa/ats": "*",
+    "@jaa/browser": "*"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
