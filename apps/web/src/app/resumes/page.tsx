@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { resumeApi } from '@/lib/api';
 import {
@@ -364,9 +365,19 @@ export default function ResumesPage() {
                                 {formatDate(version.createdAt)}
                               </span>
                             </div>
-                            {version.changeSummary && (
-                              <span className="text-muted-foreground">{version.changeSummary}</span>
-                            )}
+                            <div className="flex items-center gap-3">
+                              {version.changeSummary && (
+                                <span className="text-muted-foreground">{version.changeSummary}</span>
+                              )}
+                              {version.tailoring && (
+                                <Link
+                                  href={`/resumes/${resume.id}/versions/${version.id}/review`}
+                                  className="text-primary hover:underline font-medium"
+                                >
+                                  Review
+                                </Link>
+                              )}
+                            </div>
                           </div>
                         ))}
                     </div>

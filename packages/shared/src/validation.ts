@@ -130,6 +130,61 @@ export const resumeTailorSchema = z.object({
 
 export type ResumeTailor = z.infer<typeof resumeTailorSchema>;
 
+// Resume human review (Phase 12): approve / reject a tailored version.
+export const resumeReviewRejectSchema = z
+  .object({
+    note: z.string().trim().max(500).optional(),
+  })
+  .strict();
+
+export type ResumeReviewReject = z.infer<typeof resumeReviewRejectSchema>;
+
+// Human edits of tailored content (Phase 12). Mirrors the Phase 11 structured
+// content contract exactly (closed: unknown keys are rejected) and is always
+// re-validated against the candidate facts by the anti-fabrication validator.
+const reviewExperienceEntrySchema = z
+  .object({
+    experienceId: z.string().min(1).optional(),
+    company: z.string().min(1).max(200),
+    title: z.string().min(1).max(200),
+    bullets: z.array(z.string().min(1).max(1000)).max(50),
+  })
+  .strict();
+
+const reviewEducationEntrySchema = z
+  .object({
+    educationId: z.string().min(1).optional(),
+    institution: z.string().min(1).max(200),
+    degree: z.string().min(1).max(200),
+    fieldOfStudy: z.string().max(200),
+    details: z.array(z.string().min(1).max(1000)).max(20).optional(),
+  })
+  .strict();
+
+export const resumeReviewEditSchema = z
+  .object({
+    summary: z.string().max(5000).optional(),
+    skills: z.array(z.string().min(1).max(100)).max(200).optional(),
+    experience: z.array(reviewExperienceEntrySchema).max(50).optional(),
+    education: z.array(reviewEducationEntrySchema).max(20).optional(),
+  })
+  .strict();
+
+export type ResumeReviewEdit = z.infer<typeof resumeReviewEditSchema>;
+
+// BullMQ orchestration job payload (Phase 13). IDENTIFIERS ONLY - the worker
+// loads everything else from PostgreSQL. Strict: unknown keys are rejected so
+// resume content, candidate facts, answers, credentials, or secrets can never
+// ride along inside Redis job data.
+export const preparationJobPayloadSchema = z
+  .object({
+    applicationId: z.string().min(1),
+    automationRunId: z.string().min(1),
+  })
+  .strict();
+
+export type PreparationJobPayload = z.infer<typeof preparationJobPayloadSchema>;
+
 // Job
 export const jobCreateSchema = z.object({
   externalId: z.string().optional(),

@@ -29,7 +29,18 @@ export type {
 // never submits. See ./answer-generation for the full pipeline.
 export * from './answer-generation';
 
-// Resume tailoring and versioning (Phase 11) - creates a NEW immutable
-// ResumeVersion tailored to a Job, ready for human review. Never fills forms,
-// never submits, never mutates a source version. See ./resume-tailoring.
+// Resume tailoring and versioning (Phase 11) - AI tailoring into immutable
+// ResumeVersions with deterministic anti-fabrication validation. See
+// ./resume-tailoring for the full pipeline.
 export * from './resume-tailoring';
+
+// Human review workspace (Phase 12) - review, approve, reject tailored
+// resume versions; human edits create new immutable versions. Never submits
+// anything and never changes Application.status. See ./resume-review.
+export * from './resume-review';
+
+// Application orchestration (Phase 13) - BullMQ queue + worker handler that
+// asynchronously runs prepareApplication up to FORM_INSPECTED. Payloads are
+// identifiers only; PostgreSQL stays the source of truth. Never submits.
+// See ./orchestration.
+export * from './orchestration';

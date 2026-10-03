@@ -1,7 +1,20 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '@jaa/database';
-import { paginationSchema, resumeTailorSchema } from '@jaa/shared';
-import { tailorResumeVersion, ResumeTailoringError } from '@jaa/core';
+import {
+  paginationSchema,
+  resumeTailorSchema,
+  resumeReviewEditSchema,
+  resumeReviewRejectSchema,
+} from '@jaa/shared';
+import {
+  tailorResumeVersion,
+  ResumeTailoringError,
+  loadReviewView,
+  approveResumeVersion,
+  rejectResumeVersion,
+  createHumanEditedVersion,
+  ResumeReviewError,
+} from '@jaa/core';
 import { asyncHandler } from '../middleware/auth';
 import multer from 'multer';
 import { uploadResume, setDefaultResume, deleteResume } from '../services/resume-upload';
@@ -330,6 +343,134 @@ router.post(
         });
       }
       throw err;
+    }
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Phase 12 - Human Review Workspace.
+//
+// Review is the safety boundary between AI tailoring and any later automation:
+// a tailored version can only proceed after a human approves it. Approving a
+// resume is NOT application approval - Application.status is never changed
+// here and nothing is submitted.
+// ---------------------------------------------------------------------------
+
+const REVIEW_ERROR_STATUS: Record<string, number> = {
+  RESUME_NOT_FOUND: 404,
+  VERSION_NOT_FOUND: 404,
+  NOT_REVIEWABLE: 422,
+  REVIEW_CONFLICT: 409,
+  VALIDATION_FAILED: 422,
+};
+
+function handleReviewError(err: unknown, res: Response): boolean {
+  if (err instanceof ResumeReviewError) {
+    res.status(REVIEW_ERROR_STATUS[err.code] ?? 500).json({
+      error: {
+        code: err.code,
+        message: err.message,
+        ...(err.violations.length > 0 ? { details: err.violations } : {}),
+      },
+    });
+    return true;
+  }
+  return false;
+}
+
+// GET /api/resumes/:id/versions/:versionId/review - review workspace payload:
+// source version, tailored version, job info, safe tailoring metadata,
+// validation status, review status, version information. Never prompts,
+// provider secrets, storage paths, or raw audit metadata.
+router.get(
+  '/:id/versions/:versionId/review',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = requireUser(req, res);
+    if (!userId) return;
+    const { id, versionId } = req.params;
+
+    try {
+      const view = await loadReviewView({ resumeId: id, versionId, userId });
+      res.json({ data: view });
+    } catch (err) {
+      if (!handleReviewError(err, res)) throw err;
+    }
+  })
+);
+
+// POST /api/resumes/:id/versions/:versionId/review/approve - approve a
+// tailored resume version (idempotent; atomic PENDING -> APPROVED).
+router.post(
+  '/:id/versions/:versionId/review/approve',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = requireUser(req, res);
+    if (!userId) return;
+    const { id, versionId } = req.params;
+
+    try {
+      const result = await approveResumeVersion({ resumeId: id, versionId, userId });
+      res.json({
+        data: result,
+        message: result.changed ? 'Resume approved' : 'Resume was already approved',
+      });
+    } catch (err) {
+      if (!handleReviewError(err, res)) throw err;
+    }
+  })
+);
+
+// POST /api/resumes/:id/versions/:versionId/review/reject - reject a tailored
+// resume version with an optional short note (idempotent; the version is kept).
+router.post(
+  '/:id/versions/:versionId/review/reject',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = requireUser(req, res);
+    if (!userId) return;
+    const { id, versionId } = req.params;
+    const { note } = resumeReviewRejectSchema.parse(req.body ?? {});
+
+    try {
+      const result = await rejectResumeVersion({
+        resumeId: id,
+        versionId,
+        userId,
+        note: note ?? null,
+      });
+      res.json({
+        data: result,
+        message: result.changed ? 'Resume rejected' : 'Resume was already rejected',
+      });
+    } catch (err) {
+      if (!handleReviewError(err, res)) throw err;
+    }
+  })
+);
+
+// POST /api/resumes/:id/versions/:versionId/review/edit - human corrections of
+// tailored content. Creates a NEW immutable version (USER_EDITED, review state
+// PENDING); the edited version and its source are never modified. Edited
+// content must pass the Phase 11 anti-fabrication validator.
+router.post(
+  '/:id/versions/:versionId/review/edit',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = requireUser(req, res);
+    if (!userId) return;
+    const { id, versionId } = req.params;
+    const content = resumeReviewEditSchema.parse(req.body ?? {});
+
+    try {
+      const result = await createHumanEditedVersion({
+        resumeId: id,
+        versionId,
+        userId,
+        content,
+      });
+      res.status(201).json({
+        data: result,
+        message: 'Human-edited resume version created',
+      });
+    } catch (err) {
+      if (!handleReviewError(err, res)) throw err;
     }
   })
 );

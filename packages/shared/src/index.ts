@@ -223,6 +223,8 @@ export interface Resume {
   versions?: ResumeVersion[];
 }
 
+export type ResumeReviewStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
 export interface ResumeVersion {
   id: string;
   resumeId: string;
@@ -232,7 +234,116 @@ export interface ResumeVersion {
   changeSummary?: string;
   extractedText?: string;
   parsedData?: Record<string, unknown>;
+  tailoring?: Record<string, unknown> | null;
+  reviewStatus?: ResumeReviewStatus;
+  reviewedAt?: Date | string | null;
+  reviewedBy?: string | null;
+  reviewNotes?: string | null;
   createdAt: Date;
+}
+
+// ============================================================================
+// Human review workspace (Phase 12)
+// ============================================================================
+
+/** Section-normalized resume content used for source vs tailored comparison. */
+export interface ReviewExperienceEntry {
+  company: string;
+  title: string;
+  startDate: string | null;
+  endDate: string | null;
+  isCurrent: boolean;
+  bullets: string[];
+}
+
+export interface ReviewEducationEntry {
+  institution: string;
+  degree: string;
+  fieldOfStudy: string;
+  details: string[];
+}
+
+export interface ReviewResumeContent {
+  summary: string | null;
+  skills: string[];
+  experience: ReviewExperienceEntry[];
+  education: ReviewEducationEntry[];
+}
+
+export type ReviewChangedSection = 'summary' | 'skills' | 'experience' | 'education';
+
+/**
+ * Safe tailoring provenance for the review UI. Whitelisted fields only -
+ * never prompts, provider secrets, raw audit metadata, or resume content.
+ */
+export interface ResumeReviewProvenance {
+  sourceVersionId: string;
+  jobId: string;
+  strategy: string;
+  aiGenerated: boolean;
+  provider?: string;
+  model?: string;
+  validationStatus: string;
+  contentFormat: string;
+  promptVersion?: string;
+  generatedAt: string;
+  humanEdited?: boolean;
+}
+
+export interface ResumeReviewState {
+  reviewStatus: ResumeReviewStatus;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+  reviewNotes: string | null;
+}
+
+/** Result of approve/reject: the new review state and whether it changed. */
+export interface ResumeReviewDecision {
+  review: ResumeReviewState;
+  changed: boolean;
+}
+
+/** Result of a human edit: a NEW immutable USER_EDITED version (PENDING). */
+export interface ResumeReviewEditResult {
+  version: {
+    id: string;
+    resumeId: string;
+    versionNumber: number;
+    filePath: string;
+    source: string;
+    changeSummary: string | null;
+  };
+  review: ResumeReviewState;
+  provenance: ResumeReviewProvenance;
+}
+
+export interface ResumeReviewView {
+  resume: { id: string; name: string };
+  version: {
+    id: string;
+    resumeId: string;
+    versionNumber: number;
+    source: string;
+    changeSummary: string | null;
+    createdAt: string;
+  };
+  review: ResumeReviewState;
+  sourceVersion: { id: string; versionNumber: number; source: string; createdAt: string };
+  sourceContent: ReviewResumeContent;
+  tailoredContent: ReviewResumeContent;
+  sourceText: string | null;
+  tailoredText: string | null;
+  job: {
+    id: string;
+    company: string;
+    title: string;
+    location: string | null;
+    employmentType: string | null;
+    workMode: string | null;
+  } | null;
+  provenance: ResumeReviewProvenance;
+  validationStatus: string;
+  changedSections: ReviewChangedSection[];
 }
 
 export interface MatchCriterion {
@@ -407,6 +518,9 @@ export {
   skillUpdateSchema,
   resumeCreateSchema,
   resumeTailorSchema,
+  resumeReviewRejectSchema,
+  resumeReviewEditSchema,
+  preparationJobPayloadSchema,
   jobCreateSchema,
   applicationCreateSchema,
   applicationStatusEnum,

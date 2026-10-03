@@ -15,6 +15,10 @@ import type {
   Job,
   JobCreate,
   JobMatchSummary,
+  ResumeReviewDecision,
+  ResumeReviewEdit,
+  ResumeReviewEditResult,
+  ResumeReviewView,
 } from '@jaa/shared';
 
 export interface ResumeImportSummary {
@@ -192,6 +196,28 @@ export const resumeApi = {
     }),
   getVersion: (id: string) =>
     fetchApi<{ data: ResumeVersion[] }>(`/api/resumes/${id}/versions`),
+  getReview: (id: string, versionId: string) =>
+    fetchApi<{ data: ResumeReviewView }>(
+      `/api/resumes/${id}/versions/${versionId}/review`
+    ),
+  approveReview: (id: string, versionId: string) =>
+    fetchApi<{ data: ResumeReviewDecision; message: string }>(
+      `/api/resumes/${id}/versions/${versionId}/review/approve`,
+      { method: 'POST' }
+    ),
+  rejectReview: (id: string, versionId: string, note?: string) =>
+    fetchApi<{ data: ResumeReviewDecision; message: string }>(
+      `/api/resumes/${id}/versions/${versionId}/review/reject`,
+      {
+        method: 'POST',
+        body: JSON.stringify(note && note.trim() !== '' ? { note: note.trim() } : {}),
+      }
+    ),
+  editReview: (id: string, versionId: string, content: ResumeReviewEdit) =>
+    fetchApi<{ data: ResumeReviewEditResult; message: string }>(
+      `/api/resumes/${id}/versions/${versionId}/review/edit`,
+      { method: 'POST', body: JSON.stringify(content) }
+    ),
 };
 
 // Job APIs

@@ -13,7 +13,10 @@
     "@jaa/shared": "*",
     "@jaa/ats": "*",
     "@jaa/ai": "*",
-    "@jaa/browser": "*"
+    "@jaa/browser": "*",
+    "@jaa/greenhouse": "*",
+    "@jaa/lever": "*",
+    "bullmq": "^5.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

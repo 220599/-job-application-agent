@@ -2,10 +2,63 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '@jaa/database';
 import { ApplicationStatus } from '@prisma/client';
 import { paginationSchema, applicationStatusEnum } from '@jaa/shared';
-import { generateApplicationAnswers } from '@jaa/core';
+import {
+  generateApplicationAnswers,
+  requestApplicationPreparation,
+  getApplicationAutomationRun,
+  cancelApplicationAutomationRun,
+  isOrchestrationError,
+  type OrchestrationErrorCode,
+} from '@jaa/core';
 import { asyncHandler } from '../middleware/auth';
 
 const router = Router();
+
+// Ownership guard (same convention as resumes.ts): missing auth context is a
+// hard 401 before any state is touched.
+function requireUser(req: Request, res: Response): string | null {
+  if (!req.userId) {
+    res.status(401).json({
+      error: { code: 'UNAUTHORIZED', message: 'Authentication required' },
+    });
+    return null;
+  }
+  return req.userId;
+}
+
+// Phase 13 orchestration error codes -> HTTP status.
+const ORCHESTRATION_ERROR_STATUS: Record<OrchestrationErrorCode, number> = {
+  APPLICATION_NOT_FOUND: 404,
+  RESUME_NOT_APPROVED: 422,
+  TAILORING_NOT_VALIDATED: 422,
+  APPLICATION_TERMINAL: 409,
+  APPLICATION_STATE_NOT_PREPARABLE: 409,
+  APPLICATION_URL_MISSING: 422,
+  INVALID_APPLICATION_URL: 422,
+  UNSUPPORTED_ATS: 422,
+  ENQUEUE_FAILED: 503,
+  AUTOMATION_RUN_NOT_FOUND: 404,
+  AUTOMATION_NOT_CANCELLABLE: 409,
+  INVALID_JOB_PAYLOAD: 400,
+  RUN_MISMATCH: 409,
+  ADAPTER_NOT_FOUND: 422,
+  DUPLICATE_PROVIDER: 500,
+  BLOCKED_BY_SECURITY_POLICY: 422,
+  INSPECTION_FAILED: 502,
+  PROVIDER_UNAVAILABLE: 503,
+  TRANSIENT_FAILURE: 503,
+  PREPARATION_FAILED: 500,
+};
+
+function sendOrchestrationError(res: Response, err: unknown): void {
+  if (isOrchestrationError(err)) {
+    res.status(ORCHESTRATION_ERROR_STATUS[err.code] ?? 500).json({
+      error: { code: err.code, message: err.message },
+    });
+    return;
+  }
+  throw err;
+}
 
 // GET /api/applications - List applications
 router.get(
@@ -104,6 +157,70 @@ router.get(
     }
 
     res.json({ data: application });
+  })
+);
+
+// POST /api/applications/:id/prepare - queue asynchronous application
+// preparation (Phase 13). Requires an APPROVED resume version and a supported
+// ATS. Idempotent: an already-active AutomationRun is returned as-is and no
+// duplicate job is queued. Stops at FORM_INSPECTED - never submits anything.
+router.post(
+  '/:id/prepare',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = requireUser(req, res);
+    if (!userId) return;
+
+    try {
+      const result = await requestApplicationPreparation({
+        applicationId: req.params.id,
+        userId,
+      });
+      res.status(202).json({ automationRun: result.automationRun });
+    } catch (err) {
+      sendOrchestrationError(res, err);
+    }
+  })
+);
+
+// GET /api/applications/:id/automation - safe AutomationRun status. Exposes
+// identifiers, status, timestamps, and redacted error info only - no BullMQ
+// job objects, no Redis details, no metadata, no worker internals.
+router.get(
+  '/:id/automation',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = requireUser(req, res);
+    if (!userId) return;
+
+    try {
+      const automationRun = await getApplicationAutomationRun({
+        applicationId: req.params.id,
+        userId,
+      });
+      res.json({ automationRun });
+    } catch (err) {
+      sendOrchestrationError(res, err);
+    }
+  })
+);
+
+// POST /api/applications/:id/automation/cancel - cancel a QUEUED run.
+// Safe and idempotent: a RUNNING preparation owns a live browser session and
+// is never terminated; cancelling twice succeeds unchanged.
+router.post(
+  '/:id/automation/cancel',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = requireUser(req, res);
+    if (!userId) return;
+
+    try {
+      const result = await cancelApplicationAutomationRun({
+        applicationId: req.params.id,
+        userId,
+      });
+      res.json({ automationRun: result.automationRun });
+    } catch (err) {
+      sendOrchestrationError(res, err);
+    }
   })
 );
 
