@@ -24,3 +24,7 @@ export type {
   PrepareApplicationParams,
   PrepareApplicationResult,
 } from './application-preparation';
+
+// AI application question answering (Phase 10) - generates answers only,
+// never submits. See ./answer-generation for the full pipeline.
+export * from './answer-generation';

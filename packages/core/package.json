@@ -12,6 +12,7 @@
     "@jaa/database": "*",
     "@jaa/shared": "*",
     "@jaa/ats": "*",
+    "@jaa/ai": "*",
     "@jaa/browser": "*"
   },
   "devDependencies": {
