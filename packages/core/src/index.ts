@@ -28,3 +28,8 @@ export type {
 // AI application question answering (Phase 10) - generates answers only,
 // never submits. See ./answer-generation for the full pipeline.
 export * from './answer-generation';
+
+// Resume tailoring and versioning (Phase 11) - creates a NEW immutable
+// ResumeVersion tailored to a Job, ready for human review. Never fills forms,
+// never submits, never mutates a source version. See ./resume-tailoring.
+export * from './resume-tailoring';

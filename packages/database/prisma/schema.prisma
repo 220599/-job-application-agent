@@ -183,6 +183,7 @@ model ResumeVersion {
   changeSummary String?
   extractedText String?   // Full text from PDF/DOCX parsing
   parsedData    Json?     // Structured resume data
+  tailoring     Json?     // Provenance for TAILORED versions: sourceVersionId, jobId, strategy, aiGenerated, provider, model, validationStatus, contentFormat, generatedAt
   createdAt     DateTime  @default(now())
 
   // Relations

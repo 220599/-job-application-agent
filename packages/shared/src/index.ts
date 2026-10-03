@@ -406,6 +406,7 @@ export {
   skillCreateSchema,
   skillUpdateSchema,
   resumeCreateSchema,
+  resumeTailorSchema,
   jobCreateSchema,
   applicationCreateSchema,
   applicationStatusEnum,

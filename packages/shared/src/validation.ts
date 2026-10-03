@@ -121,6 +121,15 @@ export const resumeCreateSchema = z.object({
 
 export type ResumeCreate = z.infer<typeof resumeCreateSchema>;
 
+// Resume tailoring (Phase 11): tailor an existing ResumeVersion toward a Job.
+// `regenerate` requests a deliberate new run of an identical tailoring request.
+export const resumeTailorSchema = z.object({
+  jobId: z.string().min(1),
+  regenerate: z.boolean().optional(),
+});
+
+export type ResumeTailor = z.infer<typeof resumeTailorSchema>;
+
 // Job
 export const jobCreateSchema = z.object({
   externalId: z.string().optional(),

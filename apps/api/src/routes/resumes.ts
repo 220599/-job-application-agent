@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '@jaa/database';
-import { paginationSchema } from '@jaa/shared';
+import { paginationSchema, resumeTailorSchema } from '@jaa/shared';
+import { tailorResumeVersion, ResumeTailoringError } from '@jaa/core';
 import { asyncHandler } from '../middleware/auth';
 import multer from 'multer';
 import { uploadResume, setDefaultResume, deleteResume } from '../services/resume-upload';
@@ -221,6 +222,116 @@ router.get(
 
     res.json({ data: { parsed } });
   }) as any)
+);
+
+// Auth guard for the tailoring/version endpoints: they require an
+// authenticated user even if the global middleware were bypassed.
+function requireUser(req: Request, res: Response): string | null {
+  const userId = req.userId;
+  if (!userId) {
+    res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+    return null;
+  }
+  return userId;
+}
+
+// GET /api/resumes/:id/versions - List all versions of a resume (ownership-checked)
+router.get(
+  '/:id/versions',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = requireUser(req, res);
+    if (!userId) return;
+    const { id } = req.params;
+
+    const resume = await prisma.resume.findUnique({
+      where: { id },
+      include: { versions: { orderBy: { versionNumber: 'desc' } } },
+    });
+    if (!resume || resume.userId !== userId) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Resume not found' } });
+    }
+
+    res.json({ data: resume.versions });
+  })
+);
+
+// GET /api/resumes/:id/versions/:versionId - Get one resume version
+router.get(
+  '/:id/versions/:versionId',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = requireUser(req, res);
+    if (!userId) return;
+    const { id, versionId } = req.params;
+
+    const resume = await prisma.resume.findUnique({ where: { id } });
+    if (!resume || resume.userId !== userId) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Resume not found' } });
+    }
+    const version = await prisma.resumeVersion.findFirst({
+      where: { id: versionId, resumeId: id },
+    });
+    if (!version) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Version not found' } });
+    }
+
+    res.json({ data: version });
+  })
+);
+
+// POST /api/resumes/:id/versions/:versionId/tailor - tailor a resume version
+// toward a Job. Creates a NEW immutable ResumeVersion (source = TAILORED);
+// the source version is never modified. AI failure or fabricated content
+// (validation failure) creates NO version and returns a structured error.
+const TAILORING_ERROR_STATUS: Record<string, number> = {
+  RESUME_NOT_FOUND: 404,
+  VERSION_NOT_FOUND: 404,
+  JOB_NOT_FOUND: 404,
+  EMPTY_RESUME_CONTENT: 422,
+  VALIDATION_FAILED: 422,
+  MODEL_REQUESTED_REVIEW: 422,
+  AI_PROVIDER_UNAVAILABLE: 503,
+  AI_RATE_LIMITED: 503,
+  AI_TIMEOUT: 504,
+  AI_EMPTY_RESPONSE: 502,
+  AI_INVALID_RESPONSE: 502,
+  AI_REQUEST_FAILED: 502,
+};
+
+router.post(
+  '/:id/versions/:versionId/tailor',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = requireUser(req, res);
+    if (!userId) return;
+    const { id, versionId } = req.params;
+    const { jobId, regenerate } = resumeTailorSchema.parse(req.body);
+
+    try {
+      const result = await tailorResumeVersion({
+        resumeId: id,
+        versionId,
+        jobId,
+        userId,
+        regenerate,
+      });
+      res.status(result.reused ? 200 : 201).json({
+        data: result,
+        message: result.reused
+          ? 'Existing tailored resume version reused'
+          : 'Resume tailored successfully',
+      });
+    } catch (err) {
+      if (err instanceof ResumeTailoringError) {
+        return res.status(TAILORING_ERROR_STATUS[err.code] ?? 500).json({
+          error: {
+            code: err.code,
+            message: err.message,
+            ...(err.violations.length > 0 ? { details: err.violations } : {}),
+          },
+        });
+      }
+      throw err;
+    }
+  })
 );
 
 // PATCH /api/resumes/:id/set-default - Set default resume
