@@ -19,7 +19,29 @@ export type {
   AtsFieldOption,
   AtsFieldType,
   AtsPreparationStatus,
+  AtsSecurityChallenge,
+  AtsSecurityChallengeKind,
+  AtsSubmissionContext,
+  AtsSubmissionOutcome,
+  AtsSubmissionResult,
+  AtsSubmissionMode,
+  AtsFieldFill,
+  AtsSubmissionConfirmation,
 } from './types';
+
+// Mock submission envelope helpers (Phase 15A mock boundary)
+export {
+  MOCK_SUBMISSION_KIND,
+  buildMockSubmissionScript,
+  parseMockSubmissionResponse,
+  challengeKindFor,
+  isVerifiedSubmission,
+} from './submission';
+export type {
+  MockSubmissionEnvelope,
+  MockSubmissionResponse,
+  MockSubmissionParseResult,
+} from './submission';
 
 // Error model
 export { AtsError, isAtsError, atsErrorFromBrowserError } from './errors';

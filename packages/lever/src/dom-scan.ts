@@ -54,12 +54,19 @@ export interface LeverRawField {
 export interface LeverRawScan {
   formSelector: string | null;
   formFound: boolean;
+  /** Absolute action URL of the discovered form (submission endpoint). */
+  formAction: string | null;
   /** Structural markers proving the page really is a Lever page. */
   markers: string[];
   /** Markers of OTHER ATS platforms (a Lever page must not show them). */
   foreignMarkers: string[];
   /** CAPTCHA provider present on the form, if any (never solved by us). */
   captcha: string | null;
+  /**
+   * MFA / security / bot challenge present on the page, if any. These stop
+   * submission immediately and are never solved or bypassed (Phase 15A).
+   */
+  securityChallenge: string | null;
   fields: LeverRawField[];
 }
 
@@ -103,6 +110,28 @@ export function scanLeverPage(): LeverRawScan {
     captcha = 'g-recaptcha';
   } else if (document.querySelector('.cf-turnstile, [name="cf-turnstile-response"]')) captcha = 'turnstile';
 
+  // MFA / security / bot challenges (Phase 15A): detected, reported, and
+  // NEVER solved. Detected from stable structural markers first, then from
+  // challenge wording near the form.
+  let securityChallenge: string | null = null;
+  if (
+    document.querySelector(
+      'input[autocomplete="one-time-code"], [data-mfa-challenge], .mfa-challenge, #mfa-challenge'
+    )
+  ) {
+    securityChallenge = 'mfa';
+  } else if (
+    document.querySelector('[data-bot-challenge], .bot-challenge, #bot-challenge')
+  ) {
+    securityChallenge = 'bot-challenge';
+  } else if (
+    /two[-\s]?factor|multi[-\s]?factor|\b2fa\b|verification code|one[-\s]?time (?:code|password)|security (?:check|challenge)|verify your identity|unusual activity|are you a robot/i.test(
+      ((document.body && document.body.textContent) || '').slice(0, 6000)
+    )
+  ) {
+    securityChallenge = 'security-challenge';
+  }
+
   // ---- form discovery: stable Lever identifiers first ------------------
   const formSelectors = [
     'form#application-form',
@@ -124,9 +153,11 @@ export function scanLeverPage(): LeverRawScan {
   const scan: LeverRawScan = {
     formSelector,
     formFound: form !== null,
+    formAction: form ? form.action || null : null,
     markers,
     foreignMarkers,
     captcha,
+    securityChallenge,
     fields: [],
   };
   if (!form) return scan;

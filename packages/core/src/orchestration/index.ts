@@ -6,6 +6,10 @@ export {
   PREPARATION_QUEUE_NAME,
   PREPARATION_MAX_ATTEMPTS,
   PREPARATION_BACKOFF_MS,
+  SUBMISSION_QUEUE_NAME,
+  SUBMISSION_MAX_ATTEMPTS,
+  SUBMISSION_BACKOFF_MS,
+  SUBMITTABLE_APPLICATION_STATUSES,
   DEFAULT_RUN_STALE_MS,
   PREPARABLE_APPLICATION_STATUSES,
   TERMINAL_APPLICATION_STATUSES,
@@ -52,3 +56,58 @@ export type {
   PreparationJobOutcome,
   ErrorClassification,
 } from './handler';
+
+// Phase 15A - mock application submission (the same orchestration system,
+// its own lane: identifiers-only payloads, PostgreSQL source of truth,
+// bounded retries, and a crash-safety attempt ledger).
+export {
+  checkSubmissionEligibility,
+  checkSubmissionSafetyGate,
+  checkSubmissionReadiness,
+  checkSubmissionAnswers,
+  resolveSubmissionTarget,
+  assertMockSubmissionTarget,
+  isLoopbackUrl,
+} from './submission-eligibility';
+
+// Phase 15B - controlled real Greenhouse submission capability. The switch is
+// server-side only (JAA_REAL_GREENHOUSE_SUBMISSION_ENABLED), disabled by
+// default, Greenhouse-only, and SSRF-validated. Lever stays mock-only.
+export {
+  REAL_GREENHOUSE_SUBMISSION_FLAG,
+  REAL_SUBMISSION_PROVIDER,
+  isRealGreenhouseSubmissionEnabled,
+  assertRealGreenhouseSubmissionEnabled,
+  assertRealGreenhouseSubmissionTarget,
+  assertSubmissionTarget,
+  resolveSubmissionMode,
+} from '../submission-policy';
+export type { SubmissionTargetMode } from '../submission-policy';
+export type {
+  SubmissionEligibilityParams,
+  SubmissionEligibilityResult,
+  SubmissionAnswerProblem,
+} from './submission-eligibility';
+
+export { requestApplicationSubmission } from './submission-runs';
+export type {
+  RequestSubmissionParams,
+  RequestSubmissionResult,
+  EnqueueSubmissionFn,
+} from './submission-runs';
+
+export {
+  getSubmissionQueue,
+  enqueueSubmissionJob,
+  closeSubmissionQueue,
+  createSubmissionWorker,
+  SUBMISSION_JOB_OPTIONS,
+} from './submission-queue';
+export type { CreateSubmissionWorkerOptions } from './submission-queue';
+
+export { handleSubmissionJob } from './submission-handler';
+export type {
+  SubmissionJobContext,
+  SubmissionJobOutcome,
+  SubmissionJobFn,
+} from './submission-handler';

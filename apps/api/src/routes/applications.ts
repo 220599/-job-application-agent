@@ -7,6 +7,8 @@ import {
   requestApplicationPreparation,
   getApplicationAutomationRun,
   cancelApplicationAutomationRun,
+  approveApplicationForSubmission,
+  requestApplicationSubmission,
   isOrchestrationError,
   type OrchestrationErrorCode,
 } from '@jaa/core';
@@ -27,7 +29,9 @@ function requireUser(req: Request, res: Response): string | null {
 }
 
 // Phase 13 orchestration error codes -> HTTP status.
-const ORCHESTRATION_ERROR_STATUS: Record<OrchestrationErrorCode, number> = {
+// Exported for the API outcome-reporting tests (Phase 15B.2 scenario 17):
+// the HTTP surface must keep reporting each submission outcome honestly.
+export const ORCHESTRATION_ERROR_STATUS: Record<OrchestrationErrorCode, number> = {
   APPLICATION_NOT_FOUND: 404,
   RESUME_NOT_APPROVED: 422,
   TAILORING_NOT_VALIDATED: 422,
@@ -48,6 +52,16 @@ const ORCHESTRATION_ERROR_STATUS: Record<OrchestrationErrorCode, number> = {
   PROVIDER_UNAVAILABLE: 503,
   TRANSIENT_FAILURE: 503,
   PREPARATION_FAILED: 500,
+  // Phase 15A submission gate + outcomes.
+  HUMAN_APPROVAL_REQUIRED: 409,
+  APPLICATION_STATE_NOT_SUBMITTABLE: 409,
+  SUBMISSION_OUTCOME_UNKNOWN: 409,
+  REQUIRED_ANSWER_MISSING: 422,
+  ANSWER_NEEDS_REVIEW: 422,
+  ANSWER_INVALID: 422,
+  SUBMISSION_FAILED: 502,
+  CAPTCHA_DETECTED: 422,
+  SECURITY_CHALLENGE: 422,
 };
 
 function sendOrchestrationError(res: Response, err: unknown): void {
@@ -218,6 +232,66 @@ router.post(
         userId,
       });
       res.json({ automationRun: result.automationRun });
+    } catch (err) {
+      sendOrchestrationError(res, err);
+    }
+  })
+);
+
+// POST /api/applications/:id/approve - the EXPLICIT human approval action
+// (Phase 15A). This - and nothing else - moves the application into the
+// submittable APPROVED state. Approval is never inferred from resume
+// approval, preparation completion, job matching, form filling, or AI
+// confidence. Idempotent: approving an already-approved application is a
+// no-op success.
+router.post(
+  '/:id/approve',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = requireUser(req, res);
+    if (!userId) return;
+
+    try {
+      const result = await approveApplicationForSubmission({
+        applicationId: req.params.id,
+        userId,
+      });
+      res.json({ data: result });
+    } catch (err) {
+      sendOrchestrationError(res, err);
+    }
+  })
+);
+
+// POST /api/applications/:id/submit - queue a MOCK application submission
+// (Phase 15A). Runs the full submission safety gate before anything is
+// enqueued: explicit human approval (status APPROVED), APPROVED resume
+// version, every required answer present/resolved/valid, and a LOOPBACK
+// mock ATS target (no code path can submit a real application). Idempotent:
+// an already-submitted application is a no-op success, an active run is
+// returned as-is, and no duplicate job is ever queued. The BullMQ payload
+// is identifiers only.
+router.post(
+  '/:id/submit',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = requireUser(req, res);
+    if (!userId) return;
+
+    try {
+      const result = await requestApplicationSubmission({
+        applicationId: req.params.id,
+        userId,
+      });
+      if (result.alreadySubmitted) {
+        return res.status(200).json({
+          automationRun: result.automationRun,
+          alreadySubmitted: true,
+        });
+      }
+      res.status(202).json({
+        automationRun: result.automationRun,
+        reused: result.reused,
+        enqueued: result.enqueued,
+      });
     } catch (err) {
       sendOrchestrationError(res, err);
     }

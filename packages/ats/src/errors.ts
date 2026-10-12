@@ -14,7 +14,15 @@ export type AtsErrorCode =
   | 'PAGE_NOT_RECOGNIZED'
   | 'INSPECTION_FAILED'
   | 'PROVIDER_UNAVAILABLE'
-  | 'BLOCKED_BY_SECURITY_POLICY';
+  | 'BLOCKED_BY_SECURITY_POLICY'
+  /**
+   * The submission request may or may not have reached the ATS (network
+   * failure mid-request, unverifiable response). The outcome is UNKNOWN and
+   * the submission must never be retried blindly.
+   */
+  | 'SUBMISSION_UNCONFIRMED'
+  /** The ATS answered and refused the submission (definitive: not submitted). */
+  | 'SUBMISSION_FAILED';
 
 export class AtsError extends Error {
   constructor(

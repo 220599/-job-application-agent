@@ -11,7 +11,9 @@
     "start": "node dist/index.js",
     "lint": "eslint src",
     "type-check": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:greenhouse:real": "vitest run --config vitest.greenhouse-real.config.ts"
   },
   "dependencies": {
     "@jaa/core": "*",

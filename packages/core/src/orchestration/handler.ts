@@ -44,6 +44,10 @@ const NON_RETRYABLE_ATS_CODES = new Set([
   'INVALID_APPLICATION_URL',
   'PAGE_NOT_RECOGNIZED',
   'BLOCKED_BY_SECURITY_POLICY',
+  // Phase 15A submission boundary: retrying an unknown submission outcome
+  // could submit twice, and a refused submission is definitive.
+  'SUBMISSION_UNCONFIRMED',
+  'SUBMISSION_FAILED',
 ]);
 
 /** Transient OS/network failures worth retrying. */
@@ -96,7 +100,13 @@ export function classifyPreparationError(err: unknown): ErrorClassification {
       return { code: 'PROVIDER_UNAVAILABLE', retryable: true };
     }
     if (NON_RETRYABLE_ATS_CODES.has(err.code)) {
-      return { code: err.code === 'PAGE_NOT_RECOGNIZED' ? 'PREPARATION_FAILED' : err.code, retryable: false };
+      const code =
+        err.code === 'PAGE_NOT_RECOGNIZED'
+          ? 'PREPARATION_FAILED'
+          : err.code === 'SUBMISSION_UNCONFIRMED'
+            ? 'SUBMISSION_OUTCOME_UNKNOWN'
+            : err.code;
+      return { code, retryable: false };
     }
     // INSPECTION_FAILED: retry only when the cause looks transient.
     return hasRetryableSignal(err) || hasRetryableSignal(err.underlying)

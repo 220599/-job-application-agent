@@ -39,8 +39,27 @@ export * from './resume-tailoring';
 // anything and never changes Application.status. See ./resume-review.
 export * from './resume-review';
 
-// Application orchestration (Phase 13) - BullMQ queue + worker handler that
-// asynchronously runs prepareApplication up to FORM_INSPECTED. Payloads are
-// identifiers only; PostgreSQL stays the source of truth. Never submits.
-// See ./orchestration.
+// Application submission (Phase 15A) - the explicit human approval action
+// and the MOCK submission workflow (local mock ATS servers only, enforced by
+// policy). Owns every submission state change and the crash-safety attempt
+// ledger. See ./application-submission.
+export {
+  approveApplicationForSubmission,
+  submitApplication,
+  findUnresolvedSubmissionAttempt,
+  hasSubmissionAttemptHistory,
+  SimulatedWorkerCrash,
+  isSimulatedWorkerCrash,
+} from './application-submission';
+export type {
+  ApproveApplicationParams,
+  ApproveApplicationResult,
+  SubmitApplicationParams,
+  SubmitApplicationResult,
+} from './application-submission';
+
+// Application orchestration (Phase 13/15A) - BullMQ queues + worker
+// handlers that asynchronously run prepareApplication up to FORM_INSPECTED
+// and the mock submission workflow up to SUBMITTED. Payloads are identifiers
+// only; PostgreSQL stays the source of truth. See ./orchestration.
 export * from './orchestration';

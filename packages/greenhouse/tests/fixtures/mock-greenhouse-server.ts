@@ -10,12 +10,33 @@ import type { AddressInfo } from 'net';
  * the classic boards layout (form#application_form, native selects,
  * radio/checkbox groups, job_application[...] names). Runs on an ephemeral
  * 127.0.0.1 port; never touches the network. Any form POST is recorded as
- * a submission so tests can prove that nothing is ever submitted.
+ * a submission so tests can prove that nothing is ever submitted. Every
+ * request is also recorded in `requests` so tests can prove exactly what
+ * was (and was not) navigated. Extra routes: /captcha (reCAPTCHA challenge
+ * page for negative tests), /broken (connection killed for controlled
+ * worker-failure tests), and the Phase 15A mock submission surface:
+ *   POST /submit-application        - the mock ATS submission endpoint
+ *     (accepts the identifiers-only MOCK_SUBMISSION envelope, answers with
+ *     a verifiable confirmation; recorded with accepted=true);
+ *   POST /submit-application-error - a mock ATS that refuses every
+ *     submission with HTTP 500 (recorded with accepted=false);
+ *   GET  /submit-fail              - application form whose action points
+ *     at the error endpoint;
+ *   GET  /security-challenge       - application form behind an MFA /
+ *     security challenge (must stop submission, never be solved).
  */
 
 export interface MockGreenhouseServer {
   url: string;
+  /**
+   * Every POST the server received (form submissions AND mock submission
+   * requests). Entries carry `accepted` (true only when the mock ATS
+   * confirmed the submission) and `confirmationId` when accepted. Must stay
+   * empty in every preparation test.
+   */
   submissions: Record<string, unknown>[];
+  /** Every request the server received - proves what was/was not navigated. */
+  requests: { method: string; path: string }[];
   close(): Promise<void>;
 }
 
@@ -198,10 +219,20 @@ const MODERN_PAGE_HTML = `<!DOCTYPE html>
           list.setAttribute('role', 'listbox');
           var opts = (input.getAttribute('data-options') || '').split('|');
           for (var j = 0; j < opts.length; j++) {
-            var item = document.createElement('div');
-            item.setAttribute('role', 'option');
-            item.textContent = opts[j];
-            list.appendChild(item);
+            (function (label) {
+              var item = document.createElement('div');
+              item.setAttribute('role', 'option');
+              item.textContent = label;
+              // react-select behavior: choosing an option sets the control's
+              // value and emits input/change, then closes the menu.
+              item.addEventListener('click', function () {
+                input.value = label;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                closeAll();
+              });
+              list.appendChild(item);
+            })(opts[j]);
           }
           (document.getElementById('react-portal-mount-point') || document.body).appendChild(list);
         });
@@ -334,21 +365,239 @@ const FOREIGN_FORM_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
+/**
+ * A Greenhouse application form behind a Google reCAPTCHA challenge
+ * (negative-test page: the CAPTCHA must be detected and reported, never
+ * solved or bypassed). Mirrors the real embed markup: a div.g-recaptcha
+ * widget plus the hidden response field Google's script fills in.
+ */
+/**
+ * MFA / security challenge block (Phase 15A negative fixture): a real
+ * challenge page stops the submission; it is NEVER solved or bypassed.
+ */
+const SECURITY_CHALLENGE_BLOCK = `
+<div class="application--security-challenge" data-mfa-challenge>
+  <h2>Security check</h2>
+  <p>Enter the verification code we sent to your device to continue.</p>
+  <label for="verification_code">Verification code</label>
+  <input id="verification_code" name="verification_code" autocomplete="one-time-code" type="text" />
+</div>`;
+
+/** The modern application form behind an MFA / security challenge. */
+const SECURITY_CHALLENGE_PAGE_HTML = MODERN_PAGE_HTML.replace(
+  '</form>',
+  `</form>${SECURITY_CHALLENGE_BLOCK}`
+);
+
+/** The modern application form whose submission endpoint always errors. */
+const SUBMIT_FAIL_PAGE_HTML = MODERN_PAGE_HTML.replace(
+  'action="/submit-application"',
+  'action="/submit-application-error"'
+);
+
+/**
+ * Custom-domain board pattern: a wrapper page with NO form of its own that
+ * hosts the application form in a same-origin Greenhouse-style embed frame.
+ */
+const EMBEDDED_WRAPPER_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head><title>TestCo Careers - Apply</title></head>
+<body>
+  <h1>Apply for this job</h1>
+  <div id="grnhse_container"><div id="grnhse_app">
+    <iframe id="grnhse_iframe" title="Greenhouse Job Board" width="100%" src="/embed/job_app"></iframe>
+  </div></div>
+</body>
+</html>`;
+
+/**
+ * SSRF regression fixture: the form lives in a data: iframe. The frame
+ * layer must NEVER enter non-http(s) frames, so this page must be reported
+ * as "no application form" - nothing may be read, filled, or submitted
+ * inside that frame.
+ */
+const EMBEDDED_DATA_WRAPPER_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head><title>TestCo Careers - Apply</title></head>
+<body>
+  <h1>Apply for this job</h1>
+  <iframe id="untrusted_frame" title="Untrusted" width="100%"
+    src="data:text/html,%3Cform%20id%3D%27application-form%27%20class%3D%27application--form%27%3E%3Cinput%20id%3D%27first_name%27%20aria-required%3D%27true%27%20/%3E%3C/form%3E"></iframe>
+</body>
+</html>`;
+
+/**
+ * A CAPTCHA that loads ASYNCHRONOUSLY after the form's first scan - the
+ * pre-submit challenge gate must still stop the submission before the
+ * final submit action (detection only; never solved or bypassed).
+ */
+const CAPTCHA_LATE_PAGE_HTML = MODERN_PAGE_HTML.replace(
+  '</body>',
+  `<script>
+  setTimeout(function () {
+    var box = document.createElement('div');
+    box.className = 'g-recaptcha';
+    box.setAttribute('data-sitekey', 'test-site-key');
+    document.body.appendChild(box);
+  }, 1500);
+</script>
+</body>`
+);
+
+const CAPTCHA_PAGE_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head><title>Job Application for Site Reliability Engineer at TestCo</title></head>
+<body>
+<div id="react-portal-mount-point"></div>
+<main class="main job-post">
+  <h1>Site Reliability Engineer</h1>
+  <form id="application-form" class="application--form" method="post" action="/submit-application">
+    <div class="application--questions">
+      <div class="field-wrapper"><div class="text-input-wrapper">
+        <label id="first_name-label" for="first_name" class="label">First Name*</label>
+        <input id="first_name" class="input input__single-line" aria-label="First Name"
+               aria-required="true" type="text" autoComplete="given-name" />
+      </div></div>
+      <div class="field-wrapper"><div class="text-input-wrapper">
+        <label id="email-label" for="email" class="label">Email*</label>
+        <input id="email" class="input input__single-line" aria-label="Email"
+               aria-required="true" type="text" autoComplete="email" />
+      </div></div>
+      <div class="field-wrapper">
+        <div role="group" aria-labelledby="upload-label-resume" aria-required="true" class="file-upload">
+          <div id="upload-label-resume" class="label upload-label">Resume/CV*</div>
+          <div class="file-upload__wrapper">
+            <label class="visually-hidden" for="resume">Attach</label>
+            <input id="resume" class="visually-hidden" type="file" accept=".pdf,.doc,.docx,.txt,.rtf" />
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="application--captcha">
+      <div class="g-recaptcha" data-sitekey="test-site-key"></div>
+      <textarea id="g-recaptcha-response" name="g-recaptcha-response" class="g-recaptcha-response"
+                style="display:none" aria-hidden="true"></textarea>
+    </div>
+    <div class="application--submit">
+      <button type="submit" class="btn btn--pill">Submit application</button>
+    </div>
+  </form>
+</main>
+<footer class="footer">
+  <a class="footer-logo-link" target="_blank" href="https://www.greenhouse.com">Powered by Greenhouse</a>
+</footer>
+</body>
+</html>`;
+
+// A form whose action points at a mock ATS that answers 2xx WITHOUT the
+// documented confirmation body (Phase 15B.2 scenario: HTTP 2xx without
+// sufficient success evidence must never be claimed as SUBMITTED).
+const SUBMIT_NO_CONFIRMATION_PAGE_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head><title>Job Application for Test Engineer at TestCo</title></head>
+<body>
+  <h1>Test Engineer</h1>
+  <form id="application-form" class="application--form" method="post" action="/submit-application-no-confirmation">
+    <div class="field-wrapper"><div class="text-input-wrapper">
+      <label id="first_name-label" for="first_name" class="label">First Name*</label>
+      <input id="first_name" class="input input__single-line" aria-label="First Name"
+             aria-required="true" type="text" />
+    </div></div>
+    <div class="application--submit">
+      <button type="submit" class="btn btn--pill">Submit application</button>
+    </div>
+  </form>
+</body>
+</html>`;
+
 export async function startMockGreenhouseServer(): Promise<MockGreenhouseServer> {
   const submissions: Record<string, unknown>[] = [];
+  const requests: { method: string; path: string }[] = [];
+  let confirmationSeq = 0;
 
   const server = http.createServer((req, res) => {
     const url = (req.url ?? '/').split('?')[0];
+    requests.push({ method: req.method ?? 'GET', path: url });
     const html = (body: string) => {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(body);
     };
 
+    // Controlled failure: kill the connection before any response is written
+    // (Phase 14 worker-failure/retry tests - a crashed upstream, never a
+    // submission endpoint).
+    if (url === '/broken') {
+      req.socket.destroy();
+      return;
+    }
+
     if (req.method === 'POST') {
       let body = '';
       req.on('data', (chunk) => (body += chunk));
       req.on('end', () => {
-        submissions.push({ path: url, body });
+        const json = (status: number, payload: unknown) => {
+          res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify(payload));
+        };
+
+        // Phase 15A: the mock ATS submission endpoint. Accepts ONLY the
+        // identifiers-only MOCK_SUBMISSION envelope and answers with a
+        // verifiable confirmation. No candidate data is ever expected here.
+        if (url === '/submit-application') {
+          let accepted = false;
+          let confirmationId: string | null = null;
+          try {
+            const envelope = JSON.parse(body) as {
+              kind?: string;
+              applicationId?: string;
+              submissionAttemptId?: string;
+            };
+            accepted =
+              envelope?.kind === 'MOCK_SUBMISSION' &&
+              typeof envelope.applicationId === 'string' &&
+              envelope.applicationId.length > 0 &&
+              typeof envelope.submissionAttemptId === 'string' &&
+              envelope.submissionAttemptId.length > 0;
+          } catch {
+            accepted = false;
+          }
+          if (accepted) {
+            confirmationSeq += 1;
+            confirmationId = `mock-gh-app-${confirmationSeq}`;
+            submissions.push({ path: url, body, accepted: true, confirmationId });
+            json(200, {
+              ok: true,
+              confirmationId,
+              applicationId: confirmationId,
+              submittedAt: new Date().toISOString(),
+            });
+          } else {
+            submissions.push({ path: url, body, accepted: false });
+            json(400, { ok: false, error: 'invalid mock submission envelope' });
+          }
+          return;
+        }
+
+        // Phase 15A: a mock ATS that refuses every submission (HTTP 500).
+        if (url === '/submit-application-error') {
+          submissions.push({ path: url, body, accepted: false, reason: 'mock-ats-error' });
+          json(500, { ok: false, error: 'mock ATS submission failure' });
+          return;
+        }
+
+        // Phase 15B.2: a mock ATS that answers 2xx WITHOUT any verifiable
+        // confirmation body. A bare 2xx is NOT sufficient success evidence
+        // for this mock contract - the outcome must be UNKNOWN.
+        if (url === '/submit-application-no-confirmation') {
+          submissions.push({ path: url, body, accepted: false, reason: 'no-confirmation' });
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end('<html><body>thanks</body></html>');
+          return;
+        }
+
+        // Any other POST is recorded as a submission attempt so tests can
+        // prove that nothing is ever submitted.
+        submissions.push({ path: url, body, accepted: false });
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end('<html><body>submitted</body></html>');
       });
@@ -357,10 +606,21 @@ export async function startMockGreenhouseServer(): Promise<MockGreenhouseServer>
 
     if (req.method === 'GET') {
       if (url === '/' || url === '') return html(MODERN_PAGE_HTML);
+      if (url === '/embed/job_app') return html(MODERN_PAGE_HTML);
+      // Job-board shaped pages (`/{board_token}/jobs/{id}`): the documented
+      // URL shape the Job Board API path parses. Same modern form markup.
+      if (/^\/[^/]+\/jobs\/\d+$/.test(url)) return html(MODERN_PAGE_HTML);
+      if (url === '/submit-no-confirmation') return html(SUBMIT_NO_CONFIRMATION_PAGE_HTML);
+      if (url === '/embedded') return html(EMBEDDED_WRAPPER_HTML);
+      if (url === '/embedded-data') return html(EMBEDDED_DATA_WRAPPER_HTML);
+      if (url === '/captcha-late') return html(CAPTCHA_LATE_PAGE_HTML);
       if (url === '/classic') return html(CLASSIC_PAGE_HTML);
       if (url === '/no-form') return html(NO_FORM_HTML);
       if (url === '/generic-form') return html(GENERIC_FORM_HTML);
       if (url === '/foreign') return html(FOREIGN_FORM_HTML);
+      if (url === '/captcha') return html(CAPTCHA_PAGE_HTML);
+      if (url === '/submit-fail') return html(SUBMIT_FAIL_PAGE_HTML);
+      if (url === '/security-challenge') return html(SECURITY_CHALLENGE_PAGE_HTML);
     }
 
     res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -373,7 +633,10 @@ export async function startMockGreenhouseServer(): Promise<MockGreenhouseServer>
   return {
     url: `http://127.0.0.1:${port}`,
     submissions,
+    requests,
     close(): Promise<void> {
+      // Force-close lingering keep-alive sockets so shutdown never hangs.
+      server.closeAllConnections?.();
       return new Promise((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
       });

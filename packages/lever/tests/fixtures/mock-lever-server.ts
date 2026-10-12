@@ -10,14 +10,33 @@ import type { AddressInfo } from 'net';
  * div.application-field(.required-field), ul[data-qa="multiple-choice"|
  * "checkboxes"] of label > input + span.application-answer-alternative,
  * cards[<uuid>][fieldN] names, hidden baseTemplate/account inputs,
- * hCaptcha placeholder). Runs on an ephemeral 127.0.0.1 port; never
- * touches the network. Any form POST is recorded as a submission so
- * tests can prove that nothing is ever submitted.
+ * hCaptcha placeholder). Runs on an ephemeral loopback port; never touches
+ * the network. Any form POST is recorded as a submission so tests can prove
+ * that nothing is ever submitted. Extra Phase 15A routes:
+ *   POST /submit-application        - the mock ATS submission endpoint
+ *     (accepts the identifiers-only MOCK_SUBMISSION envelope, answers with
+ *     a verifiable confirmation; recorded with accepted=true);
+ *   POST /submit-application-error - a mock ATS that refuses every
+ *     submission with HTTP 500 (recorded with accepted=false);
+ *   GET  /no-captcha               - the application form WITHOUT the
+ *     hCaptcha placeholder (the happy-path submission fixture);
+ *   GET  /submit-fail              - captcha-free form whose action points
+ *     at the error endpoint;
+ *   GET  /security-challenge       - captcha-free form behind an MFA /
+ *     security challenge (must stop submission, never be solved).
  */
 
 export interface MockLeverServer {
   url: string;
+  /**
+   * Every POST the server received (form submissions AND mock submission
+   * requests). Entries carry `accepted` (true only when the mock ATS
+   * confirmed the submission) and `confirmationId` when accepted. Must stay
+   * empty in every preparation test.
+   */
   submissions: Record<string, unknown>[];
+  /** Every request the server received - proves what was/was not navigated. */
+  requests: { method: string; path: string }[];
   close(): Promise<void>;
 }
 
@@ -314,6 +333,40 @@ const APPLY_PAGE_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
+/**
+ * The Lever application form WITHOUT the hCaptcha placeholder - the
+ * happy-path fixture for Phase 15A mock submission (the real page keeps its
+ * hCaptcha, which correctly blocks submission).
+ */
+const APPLY_PAGE_NO_CAPTCHA_HTML = APPLY_PAGE_HTML.replace(
+  '<div id="h-captcha" class="h-captcha" data-sitekey="test-site-key"></div>',
+  ''
+).replace('<input id="hcaptchaResponseInput" type="hidden" name="h-captcha-response" value="">', '');
+
+/**
+ * MFA / security challenge block (Phase 15A negative fixture): a real
+ * challenge page stops the submission; it is NEVER solved or bypassed.
+ */
+const SECURITY_CHALLENGE_BLOCK = `
+<div class="application-security-challenge" data-mfa-challenge>
+  <h2>Security check</h2>
+  <p>Enter the verification code we sent to your device to continue.</p>
+  <label for="verification_code">Verification code</label>
+  <input id="verification_code" name="verification_code" autocomplete="one-time-code" type="text" />
+</div>`;
+
+/** The captcha-free application form behind an MFA / security challenge. */
+const SECURITY_CHALLENGE_PAGE_HTML = APPLY_PAGE_NO_CAPTCHA_HTML.replace(
+  '</form>',
+  `</form>${SECURITY_CHALLENGE_BLOCK}`
+);
+
+/** The captcha-free application form whose submission endpoint always errors. */
+const SUBMIT_FAIL_PAGE_HTML = APPLY_PAGE_NO_CAPTCHA_HTML.replace(
+  'action="/submit-application"',
+  'action="/submit-application-error"'
+);
+
 const NO_FORM_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head><title>Careers at TestCo</title></head>
@@ -362,21 +415,92 @@ const FOREIGN_FORM_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
-export async function startMockLeverServer(): Promise<MockLeverServer> {
+/**
+ * Start the mock Lever server.
+ *
+ * `host` is the loopback address to bind (default 127.0.0.1). Phase 14 E2E
+ * tests bind a second loopback address (127.0.0.2) so the shared ATS
+ * registry can tell the Lever mock apart from the Greenhouse mock by host.
+ * Loopback only - never binds a routable interface.
+ */
+export async function startMockLeverServer(host = '127.0.0.1'): Promise<MockLeverServer> {
   const submissions: Record<string, unknown>[] = [];
+  const requests: { method: string; path: string }[] = [];
+  let confirmationSeq = 0;
 
   const server = http.createServer((req, res) => {
     const url = (req.url ?? '/').split('?')[0];
+    requests.push({ method: req.method ?? 'GET', path: url });
     const html = (body: string) => {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(body);
     };
 
+    // Controlled failure: kill the connection before any response is written
+    // (Phase 14 worker-failure/retry tests - a crashed upstream, never a
+    // submission endpoint).
+    if (url === '/broken') {
+      req.socket.destroy();
+      return;
+    }
+
     if (req.method === 'POST') {
       let body = '';
       req.on('data', (chunk) => (body += chunk));
       req.on('end', () => {
-        submissions.push({ path: url, body });
+        const json = (status: number, payload: unknown) => {
+          res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify(payload));
+        };
+
+        // Phase 15A: the mock ATS submission endpoint. Accepts ONLY the
+        // identifiers-only MOCK_SUBMISSION envelope and answers with a
+        // verifiable confirmation. No candidate data is ever expected here.
+        if (url === '/submit-application') {
+          let accepted = false;
+          let confirmationId: string | null = null;
+          try {
+            const envelope = JSON.parse(body) as {
+              kind?: string;
+              applicationId?: string;
+              submissionAttemptId?: string;
+            };
+            accepted =
+              envelope?.kind === 'MOCK_SUBMISSION' &&
+              typeof envelope.applicationId === 'string' &&
+              envelope.applicationId.length > 0 &&
+              typeof envelope.submissionAttemptId === 'string' &&
+              envelope.submissionAttemptId.length > 0;
+          } catch {
+            accepted = false;
+          }
+          if (accepted) {
+            confirmationSeq += 1;
+            confirmationId = `mock-lever-app-${confirmationSeq}`;
+            submissions.push({ path: url, body, accepted: true, confirmationId });
+            json(200, {
+              ok: true,
+              confirmationId,
+              applicationId: confirmationId,
+              submittedAt: new Date().toISOString(),
+            });
+          } else {
+            submissions.push({ path: url, body, accepted: false });
+            json(400, { ok: false, error: 'invalid mock submission envelope' });
+          }
+          return;
+        }
+
+        // Phase 15A: a mock ATS that refuses every submission (HTTP 500).
+        if (url === '/submit-application-error') {
+          submissions.push({ path: url, body, accepted: false, reason: 'mock-ats-error' });
+          json(500, { ok: false, error: 'mock ATS submission failure' });
+          return;
+        }
+
+        // Any other POST is recorded as a submission attempt so tests can
+        // prove that nothing is ever submitted.
+        submissions.push({ path: url, body, accepted: false });
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end('<html><body>submitted</body></html>');
       });
@@ -388,19 +512,25 @@ export async function startMockLeverServer(): Promise<MockLeverServer> {
       if (url === '/no-form') return html(NO_FORM_HTML);
       if (url === '/generic-form') return html(GENERIC_FORM_HTML);
       if (url === '/foreign') return html(FOREIGN_FORM_HTML);
+      if (url === '/no-captcha') return html(APPLY_PAGE_NO_CAPTCHA_HTML);
+      if (url === '/submit-fail') return html(SUBMIT_FAIL_PAGE_HTML);
+      if (url === '/security-challenge') return html(SECURITY_CHALLENGE_PAGE_HTML);
     }
 
     res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end('<html><head><title>Not Found</title></head><body><h1>404</h1></body></html>');
   });
 
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) => server.listen(0, host, resolve));
   const { port } = server.address() as AddressInfo;
 
   return {
-    url: `http://127.0.0.1:${port}`,
+    url: `http://${host}:${port}`,
     submissions,
+    requests,
     close(): Promise<void> {
+      // Force-close lingering keep-alive sockets so shutdown never hangs.
+      server.closeAllConnections?.();
       return new Promise((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
       });

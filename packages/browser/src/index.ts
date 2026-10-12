@@ -20,6 +20,7 @@
 export {
   JaaBrowser,
   JaaBrowserContext,
+  JaaFrame,
   JaaPage,
   launchBrowser,
   closeBrowser,
@@ -29,6 +30,7 @@ export type {
   NavigateOptions,
   WaitForPageOptions,
   ContextOptions,
+  FrameLookupOptions,
   NavigationResult,
 } from './browser';
 

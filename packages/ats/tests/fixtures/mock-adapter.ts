@@ -5,8 +5,17 @@ import type {
   AtsApplicationPreparation,
   AtsField,
   AtsFieldType,
+  AtsSubmissionContext,
+  AtsSubmissionResult,
 } from '@jaa/ats';
-import { AtsError, atsErrorFromBrowserError } from '@jaa/ats';
+import {
+  AtsError,
+  atsErrorFromBrowserError,
+  MOCK_SUBMISSION_KIND,
+  buildMockSubmissionScript,
+  parseMockSubmissionResponse,
+  type MockSubmissionResponse,
+} from '@jaa/ats';
 
 /**
  * Phase 7 - Mock ATS adapter (TEST FIXTURE ONLY).
@@ -169,10 +178,70 @@ export class MockAtsAdapter implements AtsAdapter {
     }
   }
 
+  /**
+   * Phase 15A mock submission boundary (TEST FIXTURE): posts the
+   * identifiers-only mock envelope to the local mock server's form action
+   * and verifies the confirmation. Never called by Phase 7 tests.
+   */
+  async submitApplication(context: AtsSubmissionContext): Promise<AtsSubmissionResult> {
+    try {
+      await context.page.navigate(context.url);
+    } catch (err) {
+      if (err instanceof AtsError) throw err;
+      throw atsErrorFromBrowserError(err, this.provider, context.url);
+    }
+    const script = buildMockSubmissionScript('form', {
+      kind: MOCK_SUBMISSION_KIND,
+      applicationId: context.applicationId ?? '',
+      submissionAttemptId: context.submissionAttemptId,
+      provider: this.provider,
+      fieldCount: context.fieldCount,
+      requiredAnswerCount: context.requiredAnswerCount,
+    });
+    let response: MockSubmissionResponse;
+    try {
+      response = (await context.page.evaluate(script)) as MockSubmissionResponse;
+    } catch (err) {
+      throw new AtsError(
+        'SUBMISSION_UNCONFIRMED',
+        'The submission request outcome is unknown',
+        this.provider,
+        err
+      );
+    }
+    const parsed = parseMockSubmissionResponse(response);
+    const url = context.page.getCurrentUrl();
+    if (parsed.kind === 'SUBMITTED') {
+      return {
+        provider: this.provider,
+        url,
+        outcome: 'SUBMITTED',
+        externalApplicationId: parsed.confirmationId,
+        confirmationUrl: url,
+        httpStatus: parsed.httpStatus,
+        challenge: null,
+        warnings: [],
+      };
+    }
+    if (parsed.kind === 'REJECTED') {
+      return {
+        provider: this.provider,
+        url,
+        outcome: 'REJECTED',
+        externalApplicationId: null,
+        confirmationUrl: null,
+        httpStatus: parsed.httpStatus,
+        challenge: null,
+        warnings: [],
+      };
+    }
+    throw new AtsError('SUBMISSION_UNCONFIRMED', parsed.reason, this.provider);
+  }
+
   async prepareApplication(context: AtsAdapterContext): Promise<AtsApplicationPreparation> {
     // Phase 7 scope: inspect only. No field mapping (Phase 9), no answers
-    // (Phase 10), no submission (later phases). A recognized form yields
-    // NEEDS_REVIEW because nothing fills the fields yet.
+    // (Phase 10). A recognized form yields NEEDS_REVIEW because nothing
+    // fills the fields yet.
     try {
       const inspection = await this.inspectApplication(context);
       if (!inspection.isApplicationForm) {

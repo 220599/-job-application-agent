@@ -4,27 +4,41 @@ dotenv.config();
 
 import {
   createPreparationWorker,
+  createSubmissionWorker,
   closePreparationQueue,
+  closeSubmissionQueue,
   PREPARATION_QUEUE_NAME,
+  SUBMISSION_QUEUE_NAME,
 } from '@jaa/core';
 
 /**
- * Phase 13 - BullMQ application preparation worker.
+ * Phase 13/15A - BullMQ application workers.
  *
- * Thin bootstrap only: all orchestration logic lives in
- * @jaa/core handlePreparationJob (validate payload -> load run/application ->
- * claim run -> prepareApplication -> FORM_INSPECTED -> COMPLETED). The worker
- * never submits applications.
+ * Thin bootstrap only: all orchestration logic lives in @jaa/core.
+ *  - handlePreparationJob: validate payload -> load run/application -> claim
+ *    run -> prepareApplication -> FORM_INSPECTED -> COMPLETED. Never submits.
+ *  - handleSubmissionJob: validate payload -> safety gate -> claim run ->
+ *    submitApplication -> LOOPBACK mock ATS -> SUBMITTED. Phase 15A is
+ *    mock-only by policy: without JAA_ALLOW_MOCK_SUBMISSION=true (and never
+ *    in production) no submission can happen at all, and the submission
+ *    policy refuses any non-loopback target - so no code path here can ever
+ *    submit a real application.
  */
 const allowPrivateUrls = process.env.JAA_ALLOW_PRIVATE_URLS === 'true';
 
 console.log('[WORKER] Job queue processor starting...');
 console.log('[WORKER] Environment:', process.env.NODE_ENV || 'development');
 console.log('[WORKER] Redis URL:', process.env.REDIS_URL || 'redis://localhost:6379');
-console.log('[WORKER] Queue:', PREPARATION_QUEUE_NAME);
+console.log('[WORKER] Queues:', PREPARATION_QUEUE_NAME, SUBMISSION_QUEUE_NAME);
 console.log('[WORKER] Private URLs allowed:', allowPrivateUrls);
+console.log('[WORKER] Mock submission enabled:', process.env.JAA_ALLOW_MOCK_SUBMISSION === 'true');
 
 const worker = createPreparationWorker({
+  concurrency: Number(process.env.WORKER_CONCURRENCY) || 1,
+  allowPrivateUrls,
+});
+
+const submissionWorker = createSubmissionWorker({
   concurrency: Number(process.env.WORKER_CONCURRENCY) || 1,
   allowPrivateUrls,
 });
@@ -39,13 +53,25 @@ worker.on('error', (err) => {
   console.error('[WORKER] Worker error:', err.message);
 });
 
-console.log('[WORKER] Waiting for preparation jobs...');
+submissionWorker.on('completed', (job) => {
+  console.log(`[WORKER] Submission job ${job.id} completed (application ${job.data.applicationId})`);
+});
+submissionWorker.on('failed', (job, err) => {
+  console.error(`[WORKER] Submission job ${job?.id} failed: ${err.name}: ${err.message}`);
+});
+submissionWorker.on('error', (err) => {
+  console.error('[WORKER] Submission worker error:', err.message);
+});
+
+console.log('[WORKER] Waiting for preparation and submission jobs...');
 
 async function shutdown(signal: string): Promise<void> {
   console.log(`[WORKER] ${signal} received, shutting down gracefully...`);
   try {
     await worker.close();
+    await submissionWorker.close();
     await closePreparationQueue();
+    await closeSubmissionQueue();
   } catch {
     // Best effort - the process is exiting.
   }

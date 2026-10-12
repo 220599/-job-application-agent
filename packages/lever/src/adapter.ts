@@ -5,8 +5,18 @@ import type {
   AtsApplicationPreparation,
   AtsField,
   AtsFieldType,
+  AtsSubmissionContext,
+  AtsSubmissionResult,
 } from '@jaa/ats';
-import { AtsError, atsErrorFromBrowserError } from '@jaa/ats';
+import {
+  AtsError,
+  atsErrorFromBrowserError,
+  MOCK_SUBMISSION_KIND,
+  buildMockSubmissionScript,
+  challengeKindFor,
+  parseMockSubmissionResponse,
+  type MockSubmissionResponse,
+} from '@jaa/ats';
 
 import { scanLeverPage, type LeverRawField, type LeverRawScan } from './dom-scan';
 import { isLeverApplicationUrl, type LeverRecognitionOptions } from './recognition';
@@ -18,8 +28,11 @@ import { isLeverApplicationUrl, type LeverRecognitionOptions } from './recogniti
  * Greenhouse adapter implements; no provider internals leak into the
  * generic ATS package. All navigation goes through the public
  * @jaa/browser API (SSRF-validated); this package never imports
- * Playwright. Inspection only: it never fills candidate data, never
- * uploads a resume and never submits an application.
+ * Playwright. Inspection never fills candidate data and never uploads a
+ * resume. Submission happens only through the explicit Phase 15A MOCK
+ * submission boundary (`submitApplication`), which posts an identifiers-
+ * only envelope to a local mock ATS server and stops on any CAPTCHA / MFA /
+ * security challenge without ever solving or bypassing it.
  */
 
 export const LEVER_PROVIDER = 'LEVER';
@@ -184,9 +197,11 @@ export class LeverAtsAdapter implements AtsAdapter {
         : {
             formSelector: null,
             formFound: false,
+            formAction: null,
             markers: [],
             foreignMarkers: [],
             captcha: null,
+            securityChallenge: null,
             fields: [],
           };
 
@@ -196,6 +211,11 @@ export class LeverAtsAdapter implements AtsAdapter {
       if (scan.captcha) {
         warnings.push(
           `A ${scan.captcha} CAPTCHA is present on the form; it will require human interaction and is never bypassed`
+        );
+      }
+      if (scan.securityChallenge) {
+        warnings.push(
+          `A ${scan.securityChallenge} security challenge is present on the page; submission stops immediately and the challenge is never solved or bypassed`
         );
       }
 
@@ -242,6 +262,158 @@ export class LeverAtsAdapter implements AtsAdapter {
       if (err instanceof AtsError) throw err;
       throw atsErrorFromBrowserError(err, this.provider, context.url);
     }
+  }
+
+  /**
+   * Phase 15A - MOCK submission boundary.
+   *
+   * Posts the identifiers-only mock submission envelope to the form's
+   * action on the (local mock) ATS and verifies the confirmation. The core
+   * workflow guarantees this is only ever reached with a loopback mock ATS
+   * target; real applications are structurally out of reach.
+   *
+   * Safety contract:
+   *  - CAPTCHA / MFA / security challenges STOP the submission: reported as
+   *    CHALLENGE_DETECTED, never solved, never bypassed;
+   *  - errors thrown BEFORE the request is sent mean the submission
+   *    definitively did not happen;
+   *  - once the request may have reached the ATS, any failure throws
+   *    SUBMISSION_UNCONFIRMED (unknown outcome) - callers must never retry
+   *    that blindly.
+   *  - the envelope carries identifiers and counts only: no answers, no
+   *    resume content, no candidate PII.
+   */
+  async submitApplication(context: AtsSubmissionContext): Promise<AtsSubmissionResult> {
+    if (!this.canHandle(context.url)) {
+      throw new AtsError(
+        'PAGE_NOT_RECOGNIZED',
+        `The URL is not a Lever application URL: ${context.url}`,
+        this.provider
+      );
+    }
+
+    // ---- pre-request phase: failures here mean NOTHING was submitted ----
+    let scan: LeverRawScan;
+    try {
+      await context.page.navigate(context.url);
+      let formFound = true;
+      try {
+        await context.page.waitForPage({ selector: 'form' });
+      } catch {
+        formFound = false;
+      }
+      scan = formFound
+        ? await context.page.evaluate(scanLeverPage)
+        : {
+            formSelector: null,
+            formFound: false,
+            formAction: null,
+            markers: [],
+            foreignMarkers: [],
+            captcha: null,
+            securityChallenge: null,
+            fields: [],
+          };
+    } catch (err) {
+      if (err instanceof AtsError) throw err;
+      throw atsErrorFromBrowserError(err, this.provider, context.url);
+    }
+
+    const url = context.page.getCurrentUrl();
+    const warnings: string[] = [];
+
+    // Security challenges stop submission immediately - never solved.
+    if (scan.captcha) {
+      return {
+        provider: this.provider,
+        url,
+        outcome: 'CHALLENGE_DETECTED',
+        externalApplicationId: null,
+        confirmationUrl: null,
+        httpStatus: null,
+        challenge: { kind: challengeKindFor(scan.captcha), detail: scan.captcha },
+        warnings,
+      };
+    }
+    if (scan.securityChallenge) {
+      return {
+        provider: this.provider,
+        url,
+        outcome: 'CHALLENGE_DETECTED',
+        externalApplicationId: null,
+        confirmationUrl: null,
+        httpStatus: null,
+        challenge: {
+          kind: challengeKindFor(scan.securityChallenge),
+          detail: scan.securityChallenge,
+        },
+        warnings,
+      };
+    }
+
+    if (!scan.formFound || !scan.formSelector) {
+      // Definitive: there is no form to submit, so nothing was sent.
+      return {
+        provider: this.provider,
+        url,
+        outcome: 'REJECTED',
+        externalApplicationId: null,
+        confirmationUrl: null,
+        httpStatus: null,
+        challenge: null,
+        warnings: ['No application form was found to submit'],
+      };
+    }
+
+    // ---- request phase: from here the outcome may be UNKNOWN -----------
+    const script = buildMockSubmissionScript(scan.formSelector, {
+      kind: MOCK_SUBMISSION_KIND,
+      applicationId: context.applicationId ?? '',
+      submissionAttemptId: context.submissionAttemptId,
+      provider: this.provider,
+      fieldCount: context.fieldCount,
+      requiredAnswerCount: context.requiredAnswerCount,
+    });
+
+    let response: MockSubmissionResponse;
+    try {
+      response = (await context.page.evaluate(script)) as MockSubmissionResponse;
+    } catch (err) {
+      // The request may have gone out before the failure - outcome unknown.
+      throw new AtsError(
+        'SUBMISSION_UNCONFIRMED',
+        `The submission request outcome is unknown: ${err instanceof Error ? err.message : String(err)}`,
+        this.provider,
+        err
+      );
+    }
+
+    const parsed = parseMockSubmissionResponse(response);
+    if (parsed.kind === 'SUBMITTED') {
+      return {
+        provider: this.provider,
+        url,
+        outcome: 'SUBMITTED',
+        externalApplicationId: parsed.confirmationId,
+        confirmationUrl: url,
+        httpStatus: parsed.httpStatus,
+        challenge: null,
+        warnings,
+      };
+    }
+    if (parsed.kind === 'REJECTED') {
+      return {
+        provider: this.provider,
+        url,
+        outcome: 'REJECTED',
+        externalApplicationId: null,
+        confirmationUrl: null,
+        httpStatus: parsed.httpStatus,
+        challenge: null,
+        warnings,
+      };
+    }
+    throw new AtsError('SUBMISSION_UNCONFIRMED', parsed.reason, this.provider);
   }
 
   /**

@@ -4,7 +4,10 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-import { createDefaultAtsRegistry, AtsError, type AtsAdapter } from '@jaa/ats';
+import { createDefaultAtsRegistry, AtsError, type AtsAdapter, type AtsFieldFill } from '@jaa/ats';
+import type { JaaPage } from '@jaa/browser';
+
+import { fillGreenhouseComboboxFields } from '../src/real-submission';
 
 import {
   GreenhouseAtsAdapter,
@@ -601,5 +604,197 @@ describe('classifyGreenhouseField', () => {
     expect(classifyGreenhouseField('Resume/CV', { inputType: 'file' })).toBe('resume');
     expect(classifyGreenhouseField('Cover Letter', { inputType: 'file' })).toBe('cover_letter');
     expect(classifyGreenhouseField('Tell us about yourself', {})).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 15B.1 - preparation hardening (mock E2E against the LOCAL mock
+// server only - no live target is ever used and no real application is ever
+// submitted).
+// ---------------------------------------------------------------------------
+
+describe('Greenhouse preparation hardening (Phase 15B.1)', () => {
+  async function withPage<T>(fn: (page: JaaPage) => Promise<T>): Promise<T> {
+    const { launchBrowser } = await import('@jaa/browser');
+    const browser = await launchBrowser({ allowPrivateUrls: true, screenshotDir });
+    const context = await browser.createContext({ allowPrivateUrls: true });
+    const page = await context.createPage();
+    try {
+      return await fn(page);
+    } finally {
+      await context.close();
+    }
+  }
+
+  /** Run the REAL-mode submission path against a LOCAL mock route. */
+  async function runRealSubmission(route: string, fieldFills: AtsFieldFill[]) {
+    const { launchBrowser } = await import('@jaa/browser');
+    const browser = await launchBrowser({ allowPrivateUrls: true, screenshotDir });
+    const context = await browser.createContext({ allowPrivateUrls: true });
+    const page = await context.createPage();
+    const adapter = fixtureAdapter();
+    try {
+      const result = await adapter.submitApplication({
+        url: `${mock.url}${route}`,
+        page,
+        browserContext: context,
+        applicationId: `test-gh-${route.replace(/[^a-z0-9]+/gi, '-')}`,
+        submissionAttemptId: `attempt-${route.replace(/[^a-z0-9]+/gi, '-')}-${Date.now()}`,
+        fieldCount: fieldFills.length,
+        requiredAnswerCount: fieldFills.filter((f) => f.required).length,
+        submissionMode: 'REAL',
+        fieldFills,
+        resumeFile: null,
+        metadata: { provider: 'GREENHOUSE' },
+      });
+      return { result, error: null };
+    } catch (err) {
+      return { result: null, error: err };
+    } finally {
+      await context.close();
+    }
+  }
+
+  it('fills React Select comboboxes only from live options grounded in the approved answers', async () => {
+    const submissionsBefore = mock.submissions.length;
+    const outcome = await withPage(async (page) => {
+      await page.navigate(`${mock.url}/`);
+      const fillResult = await fillGreenhouseComboboxFields(page, [
+        { cssSelector: '#country', fieldType: 'SELECT', value: 'Canada' },
+        { cssSelector: '#candidate-location', fieldType: 'SELECT', value: 'Remote' },
+        { cssSelector: '#question_70000004', fieldType: 'SELECT', value: 'Yes' },
+      ]);
+      const values = (await page.evaluate(`(function () {
+        return {
+          country: document.getElementById('country').value,
+          location: document.getElementById('candidate-location').value,
+          workAuth: document.getElementById('question_70000004').value
+        };
+      })()`)) as Record<string, string>;
+      return { fillResult, values };
+    });
+    expect(outcome.fillResult.filled).toEqual([
+      '#country',
+      '#candidate-location',
+      '#question_70000004',
+    ]);
+    expect(outcome.fillResult.missed).toEqual([]);
+    expect(outcome.values).toEqual({ country: 'Canada', location: 'Remote', workAuth: 'Yes' });
+    expect(mock.submissions).toHaveLength(submissionsBefore);
+  });
+
+  it('records a dropdown as missed and selects nothing when no live option matches', async () => {
+    const submissionsBefore = mock.submissions.length;
+    const outcome = await withPage(async (page) => {
+      await page.navigate(`${mock.url}/`);
+      const fillResult = await fillGreenhouseComboboxFields(page, [
+        { cssSelector: '#country', fieldType: 'SELECT', value: 'Germany' },
+        { cssSelector: '#question_70000004', fieldType: 'SELECT', value: 'Maybe' },
+      ]);
+      const values = (await page.evaluate(`(function () {
+        return {
+          country: document.getElementById('country').value,
+          workAuth: document.getElementById('question_70000004').value
+        };
+      })()`)) as Record<string, string>;
+      return { fillResult, values };
+    });
+    expect(outcome.fillResult.filled).toEqual([]);
+    expect(outcome.fillResult.missed).toEqual(['#country', '#question_70000004']);
+    // Never a default or first option: both fields stay untouched.
+    expect(outcome.values).toEqual({ country: '', workAuth: '' });
+    expect(mock.submissions).toHaveLength(submissionsBefore);
+  });
+
+  it('inspects the application form inside a same-origin Greenhouse embed frame', async () => {
+    const submissionsBefore = mock.submissions.length;
+    const inspection = await inspectPath('/embedded');
+    expect(inspection.isApplicationForm).toBe(true);
+    const byId = new Map(inspection.fields.map((f) => [f.externalFieldId, f]));
+    expect(byId.get('first_name')?.type).toBe('TEXT');
+    expect(byId.get('question_70000004')?.options?.map((o) => o.label)).toEqual(['Yes', 'No']);
+    expect(inspection.warnings.some((w) => w.includes('embedded frame'))).toBe(true);
+    expect(mock.submissions).toHaveLength(submissionsBefore);
+  });
+
+  it('never enters a non-http(s) (data:) frame - the page is not an application form', async () => {
+    const submissionsBefore = mock.submissions.length;
+    const inspection = await inspectPath('/embedded-data');
+    expect(inspection.isApplicationForm).toBe(false);
+    expect(inspection.fields).toHaveLength(0);
+    expect(mock.submissions).toHaveLength(submissionsBefore);
+  });
+
+  it('stops at a late-loading CAPTCHA before the final submit action (never solved)', async () => {
+    const submissionsBefore = mock.submissions.length;
+    const { result, error } = await runRealSubmission('/captcha-late', [
+      {
+        questionId: 'first_name',
+        fieldType: 'TEXT',
+        locator: { cssSelector: '#first_name', attributes: {} },
+        value: 'Qwerty-Approved-Answer-42',
+        required: true,
+      },
+    ]);
+    expect(error).toBeNull();
+    expect(result?.outcome).toBe('CHALLENGE_DETECTED');
+    expect(result?.challenge?.kind).toBe('CAPTCHA');
+    expect(result?.challenge?.detail).toBe('g-recaptcha');
+    // The challenge stopped the flow BEFORE the final submit action: the
+    // mock ATS recorded nothing.
+    expect(mock.submissions).toHaveLength(submissionsBefore);
+    // Diagnostics name the challenge, never the candidate answers.
+    const warnings = result?.warnings.join('\n') ?? '';
+    expect(warnings).toContain('CAPTCHA');
+    expect(warnings).not.toContain('Qwerty');
+  });
+
+  it('never issues a second submission attempt after an unknown outcome', async () => {
+    const submissionsBefore = mock.submissions.length;
+    const { result, error } = await runRealSubmission('/classic', [
+      {
+        questionId: 'first_name',
+        fieldType: 'TEXT',
+        locator: { cssSelector: '#first_name', attributes: {} },
+        value: 'Test',
+        required: true,
+      },
+      {
+        questionId: 'last_name',
+        fieldType: 'TEXT',
+        locator: { cssSelector: '#last_name', attributes: {} },
+        value: 'Candidate',
+        required: true,
+      },
+      {
+        questionId: 'email',
+        fieldType: 'EMAIL',
+        locator: { cssSelector: '#email', attributes: {} },
+        value: 'test-candidate@example.com',
+        required: true,
+      },
+      {
+        questionId: 'job_application[custom_questions][102]',
+        fieldType: 'RADIO',
+        locator: {
+          cssSelector: '[name="job_application[custom_questions][102]"]',
+          attributes: {},
+        },
+        value: 'yes',
+        required: true,
+        options: [
+          { value: 'yes', label: 'Yes' },
+          { value: 'no', label: 'No' },
+        ],
+      },
+    ]);
+    // The mock ATS answered without a verifiable confirmation: the outcome
+    // is UNKNOWN and is reported as such - never claimed as submitted.
+    expect(result).toBeNull();
+    expect(error).toBeInstanceOf(AtsError);
+    expect((error as AtsError).code).toBe('SUBMISSION_UNCONFIRMED');
+    // Exactly ONE request ever reached the mock ATS. An unknown outcome is
+    // never followed by an automatic second submission attempt.
+    expect(mock.submissions).toHaveLength(submissionsBefore + 1);
   });
 });

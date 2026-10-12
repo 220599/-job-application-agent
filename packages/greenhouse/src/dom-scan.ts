@@ -47,12 +47,19 @@ export interface GreenhouseRawField {
 export interface GreenhouseRawScan {
   formSelector: string | null;
   formFound: boolean;
+  /** Absolute action URL of the discovered form (submission endpoint). */
+  formAction: string | null;
   /** Structural markers proving the page really is a Greenhouse page. */
   markers: string[];
   /** Markers of OTHER ATS platforms (a Greenhouse page must not show them). */
   foreignMarkers: string[];
   /** CAPTCHA provider present on the form, if any (never solved by us). */
   captcha: string | null;
+  /**
+   * MFA / security / bot challenge present on the page, if any. These stop
+   * submission immediately and are never solved or bypassed (Phase 15A).
+   */
+  securityChallenge: string | null;
   fields: GreenhouseRawField[];
 }
 
@@ -85,11 +92,52 @@ export function scanGreenhousePage(): GreenhouseRawScan {
     foreignMarkers.push('lever-application-label');
   }
 
+  // CAPTCHA detection covers the widget AND its late-loading artifacts
+  // (loader script, hidden response field, provider iframes incl. the
+  // Enterprise hosts like recaptcha.net): detection only - a present
+  // challenge always STOPS the flow and is never solved or bypassed.
   let captcha: string | null = null;
-  if (document.querySelector('.h-captcha, #h-captcha, [name="h-captcha-response"]')) captcha = 'h-captcha';
-  else if (document.querySelector('.g-recaptcha, [name="g-recaptcha-response"], iframe[src*="recaptcha"]')) {
+  if (
+    document.querySelector(
+      '.h-captcha, #h-captcha, [name="h-captcha-response"], iframe[src*="hcaptcha"], script[src*="hcaptcha"]'
+    )
+  ) {
+    captcha = 'h-captcha';
+  } else if (
+    document.querySelector(
+      '.g-recaptcha, [name="g-recaptcha-response"], iframe[src*="recaptcha"], script[src*="recaptcha"]'
+    )
+  ) {
     captcha = 'g-recaptcha';
-  } else if (document.querySelector('.cf-turnstile, [name="cf-turnstile-response"]')) captcha = 'turnstile';
+  } else if (
+    document.querySelector(
+      '.cf-turnstile, [name="cf-turnstile-response"], iframe[src*="challenges.cloudflare.com"], script[src*="challenges.cloudflare.com"]'
+    )
+  ) {
+    captcha = 'turnstile';
+  }
+
+  // MFA / security / bot challenges (Phase 15A): detected, reported, and
+  // NEVER solved. Detected from stable structural markers first, then from
+  // challenge wording near the form.
+  let securityChallenge: string | null = null;
+  if (
+    document.querySelector(
+      'input[autocomplete="one-time-code"], [data-mfa-challenge], .mfa-challenge, #mfa-challenge'
+    )
+  ) {
+    securityChallenge = 'mfa';
+  } else if (
+    document.querySelector('[data-bot-challenge], .bot-challenge, #bot-challenge')
+  ) {
+    securityChallenge = 'bot-challenge';
+  } else if (
+    /two[-\s]?factor|multi[-\s]?factor|\b2fa\b|verification code|one[-\s]?time (?:code|password)|security (?:check|challenge)|verify your identity|unusual activity|are you a robot/i.test(
+      ((document.body && document.body.textContent) || '').slice(0, 6000)
+    )
+  ) {
+    securityChallenge = 'security-challenge';
+  }
 
   // ---- form discovery: stable Greenhouse identifiers first -------------
   const formSelectors = [
@@ -114,9 +162,11 @@ export function scanGreenhousePage(): GreenhouseRawScan {
   const scan: GreenhouseRawScan = {
     formSelector,
     formFound: form !== null,
+    formAction: form ? form.action || null : null,
     markers,
     foreignMarkers,
     captcha,
+    securityChallenge,
     fields: [],
   };
   if (!form) return scan;

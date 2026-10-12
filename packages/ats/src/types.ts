@@ -112,10 +112,157 @@ export interface AtsApplicationPreparation {
   errors: string[];
 }
 
+// ============================================================================
+// Submission boundary (Phase 15A - MOCK submission only)
+// ============================================================================
+
+/**
+ * A security challenge detected on the page. These STOP any submission
+ * immediately - they are never solved, bypassed, or worked around.
+ */
+export type AtsSecurityChallengeKind =
+  | 'CAPTCHA'
+  | 'MFA'
+  | 'SECURITY_CHALLENGE'
+  | 'BOT_CHALLENGE';
+
+export interface AtsSecurityChallenge {
+  kind: AtsSecurityChallengeKind;
+  /** Provider/marker tag detected on the page (e.g. "g-recaptcha", "mfa"). */
+  detail: string;
+}
+
+/**
+ * Everything an adapter needs to attempt a submission. For the MOCK path
+ * only identifiers and counts are used - never answer text, never resume
+ * content, never candidate PII. For the REAL path (Phase 15B, Greenhouse
+ * only, behind the server capability) the prepared field values are provided
+ * in `fieldFills` so the adapter can fill the live form. These values are
+ * passed IN-MEMORY from the core workflow to the adapter - they never appear
+ * in BullMQ payloads or ApplicationEvent metadata.
+ */
+export interface AtsSubmissionContext extends AtsAdapterContext {
+  /** Durable per-attempt identifier (mirrors the SUBMISSION_STARTED event). */
+  submissionAttemptId: string;
+  /** Number of inspected form fields. A count, never field content. */
+  fieldCount: number;
+  /** Number of answered required questions. A count, never answer text. */
+  requiredAnswerCount: number;
+  /**
+   * MOCK (loopback envelope) or REAL (fill + submit the live form). Decided
+   * ONLY by the server capability policy - never by client input. Defaults
+   * to MOCK, preserving Phase 15A behavior.
+   */
+  submissionMode?: AtsSubmissionMode;
+  /**
+   * Prepared field values to fill for a REAL submission. Empty/absent for
+   * the MOCK path. In-memory only - never serialized into a queue payload.
+   */
+  fieldFills?: AtsFieldFill[];
+  /** Absolute path of the approved resume file for FILE uploads (REAL only). */
+  resumeFile?: string | null;
+}
+
+export type AtsSubmissionMode = 'MOCK' | 'REAL';
+
+/**
+ * One prepared field value for a REAL form fill. `value` is the answer text;
+ * it is used only to fill the live form and is never logged or persisted to
+ * events.
+ */
+export interface AtsFieldFill {
+  questionId: string;
+  fieldType: AtsFieldType;
+  locator: AtsFieldLocator | null;
+  value: string;
+  required: boolean;
+  options?: AtsFieldOption[] | null;
+  /**
+   * The human-readable question label (from the inspected form). Optional:
+   * providers that submit through a documented non-browser API need it to
+   * map the approved answer onto the provider's documented field names.
+   * Never PII - it is the form's own question text.
+   */
+  label?: string | null;
+  /** The provider's external field identifier from inspection, when known. */
+  externalFieldId?: string | null;
+}
+
+/**
+ * How a REAL submission was confirmed by the provider (Phase 15B). The
+ * strongest available evidence is used and nothing is ever faked:
+ *  - PROVIDER_ID  : the provider exposed a stable application/confirmation id;
+ *  - SUCCESS_PAGE : a confirmed success/confirmation page was detected (form
+ *                   gone + explicit application-received confirmation);
+ *  - HTTP_ACCEPTED: a documented submission endpoint answered 2xx to the
+ *                   authenticated submission request itself, but exposed no
+ *                   id. This is the weakest tier: the endpoint's documented
+ *                   contract IS the submission, so its success response is
+ *                   the documented success signal - but no independent
+ *                   lookup or confirmation id exists to strengthen it.
+ */
+export interface AtsSubmissionConfirmation {
+  method: 'PROVIDER_ID' | 'SUCCESS_PAGE' | 'HTTP_ACCEPTED';
+  /** Provider application/confirmation reference, when one is exposed. */
+  reference: string | null;
+  /** URL of the confirmed success page. */
+  url: string | null;
+}
+
+export type AtsSubmissionOutcome = 'SUBMITTED' | 'REJECTED' | 'CHALLENGE_DETECTED';
+
+/**
+ * Result of a submission attempt against the (mock) ATS.
+ *
+ *  - SUBMITTED: the ATS answered with a verifiable confirmation
+ *    (`externalApplicationId` is the confirmation id);
+ *  - REJECTED: the ATS answered and refused (HTTP error / form refusal) -
+ *    the submission definitively did NOT happen;
+ *  - CHALLENGE_DETECTED: a CAPTCHA/MFA/security challenge was found and the
+ *    request was never sent.
+ *
+ * An adapter THROWS instead when the outcome is UNKNOWN (the request may or
+ * may not have reached the ATS, e.g. a network failure mid-request). That
+ * maps to AtsError code SUBMISSION_UNCONFIRMED and must never be retried
+ * blindly.
+ */
+export interface AtsSubmissionResult {
+  provider: string;
+  /** Final page URL around the submission attempt. */
+  url: string;
+  outcome: AtsSubmissionOutcome;
+  /** ATS confirmation/application id (SUBMITTED only). */
+  externalApplicationId?: string | null;
+  confirmationUrl?: string | null;
+  /** HTTP status of the ATS response, when one was received. */
+  httpStatus?: number | null;
+  /** Present on CHALLENGE_DETECTED. */
+  challenge?: AtsSecurityChallenge | null;
+  /**
+   * Provider confirmation evidence (REAL submissions). Present and required
+   * for a verified real submission; the MOCK path instead fills
+   * `externalApplicationId` with the mock confirmation id.
+   */
+  confirmation?: AtsSubmissionConfirmation | null;
+  /**
+   * Which transport carried the submission request: a documented provider
+   * API ('API') or the application form in a browser ('BROWSER'). Recorded
+   * for audit so a policy-permitted path fallback is never silent.
+   */
+  transport?: 'API' | 'BROWSER';
+  warnings: string[];
+}
+
 /**
  * The generic ATS contract. Providers implement this; higher layers call
- * it through the registry. Adapters must never submit applications and
- * must never transition an application to SUBMITTED.
+ * it through the registry.
+ *
+ * Inspection/preparation never submit. Submission happens ONLY through the
+ * explicit `submitApplication` boundary, only after the core submission
+ * safety gate (human approval, approved resume, complete answers) and only
+ * against local mock ATS servers (Phase 15A). Adapters never transition an
+ * application to SUBMITTED themselves - they report a result and the core
+ * workflow owns every state change.
  */
 export interface AtsAdapter {
   /** Provider identifier, e.g. "GREENHOUSE", "MOCK". */
@@ -128,4 +275,10 @@ export interface AtsAdapter {
   inspectApplication(context: AtsAdapterContext): Promise<AtsApplicationInspection>;
   /** Prepare the application (no submission). */
   prepareApplication(context: AtsAdapterContext): Promise<AtsApplicationPreparation>;
+  /**
+   * Attempt a submission at the MOCK boundary (Phase 15A). Must stop on any
+   * security challenge, must never solve/bypass one, and must throw
+   * AtsError('SUBMISSION_UNCONFIRMED') when the outcome is unknown.
+   */
+  submitApplication(context: AtsSubmissionContext): Promise<AtsSubmissionResult>;
 }

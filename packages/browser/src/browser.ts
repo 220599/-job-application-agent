@@ -2,18 +2,21 @@ import { chromium } from 'playwright';
 import type {
   Browser as PlaywrightBrowser,
   BrowserContext as PlaywrightBrowserContext,
+  Frame as PlaywrightFrame,
   Page as PlaywrightPage,
 } from 'playwright';
 import fs from 'fs/promises';
 import path from 'path';
 
 import { getBrowserConfig, type BrowserConfig } from './config';
-import { assertPublicHttpUrl } from './url-validation';
+import { assertPublicHttpUrl, validatePublicHttpUrl } from './url-validation';
 import { logBrowserEvent } from './logger';
 import {
   HttpNavigationError,
+  InvalidUrlError,
   NavigationFailedError,
   NavigationTimeoutError,
+  UrlBlockedError,
 } from './errors';
 
 // ============================================================================
@@ -57,6 +60,24 @@ export interface WaitForPageOptions {
 export interface ContextOptions {
   viewport?: { width: number; height: number };
   userAgent?: string;
+}
+
+export interface FrameLookupOptions {
+  /**
+   * Exact origins (protocol+host+port) allowed for a CROSS-ORIGIN child
+   * frame. Frames on the page's own origin are always allowed. Cross-origin
+   * frames outside this list are never entered.
+   */
+  allowedOrigins?: string[];
+  /**
+   * Host suffixes allowed for a cross-origin child frame (e.g.
+   * `greenhouse.io` allows `job-boards.greenhouse.io` and
+   * `boards.eu.greenhouse.io`). A suffix only ever matches a full label
+   * boundary: `greenhouse.io` never matches `notgreenhouse.io`.
+   */
+  allowedOriginSuffixes?: string[];
+  /** How long to wait for a qualifying frame to appear. */
+  timeoutMs?: number;
 }
 
 // ============================================================================
@@ -187,6 +208,12 @@ export class JaaPage {
     logBrowserEvent('ACTION_PERFORMED', { action: 'setInputFiles', selector, fileCount: files.length });
   }
 
+  /** Select an option in a <select> by value. Logs the selector, never the value. */
+  async selectOption(selector: string, value: string): Promise<void> {
+    await this.pwPage.selectOption(selector, value, { timeout: this.config.actionTimeoutMs });
+    logBrowserEvent('ACTION_PERFORMED', { action: 'selectOption', selector });
+  }
+
   async waitForSelector(selector: string, timeoutMs?: number): Promise<void> {
     await this.pwPage.waitForSelector(selector, {
       timeout: timeoutMs ?? this.config.actionTimeoutMs,
@@ -196,6 +223,193 @@ export class JaaPage {
   /** Run JS in the page (advanced use, e.g. storage-state isolation checks). */
   async evaluate<T>(pageFunction: string | ((arg?: unknown) => T)): Promise<T> {
     return this.pwPage.evaluate(pageFunction);
+  }
+
+  // ------------------------------------------------------------------------
+  // Narrow, SSRF-safe iframe interaction (Phase 15B.1).
+  // ------------------------------------------------------------------------
+
+  /** Origin of the current main document ('null' when it has none). */
+  private currentOrigin(): string {
+    try {
+      return new URL(this.pwPage.url()).origin.toLowerCase();
+    } catch {
+      return 'null';
+    }
+  }
+
+  /**
+   * Resolve the first child frame that contains `selector` - the ONLY way
+   * code outside this package ever interacts with iframe content. The
+   * restrictions never relax:
+   *
+   *  - every candidate frame URL passes the same SSRF policy as navigation
+   *    (private/loopback/metadata hosts and non-http protocols are skipped
+   *    unless the browser was explicitly launched with allowPrivateUrls);
+   *  - frames are same-origin by DEFAULT; a cross-origin frame is only ever
+   *    entered when its origin is explicitly allowed (`allowedOrigins`) or
+   *    its host matches an allowed provider suffix (`allowedOriginSuffixes`);
+   *  - there is no API to NAVIGATE a frame anywhere - interaction stays
+   *    inside the frame the page itself loaded;
+   *  - the returned handle re-validates URL and origin on EVERY call, so a
+   *    frame that later navigates to a blocked URL refuses interaction.
+   */
+  async frameContaining(
+    selector: string,
+    options?: FrameLookupOptions
+  ): Promise<JaaFrame | null> {
+    const timeoutMs = options?.timeoutMs ?? this.config.actionTimeoutMs;
+    const allowedOrigins = (options?.allowedOrigins ?? []).map((o) => o.toLowerCase());
+    const allowedOriginSuffixes = (options?.allowedOriginSuffixes ?? []).map((s) =>
+      s.toLowerCase()
+    );
+    const pageOrigin = this.currentOrigin();
+    const deadline = Date.now() + timeoutMs;
+
+    for (;;) {
+      for (const pwFrame of this.pwPage.frames()) {
+        if (pwFrame === this.pwPage.mainFrame()) continue;
+        const frameUrl = pwFrame.url();
+
+        // SSRF guard - identical policy to navigation.
+        const check = validatePublicHttpUrl(frameUrl, {
+          allowPrivate: this.config.allowPrivateUrls,
+        });
+        if (!check.valid) {
+          logBrowserEvent('BROWSER_EVENT', {
+            action: 'FRAME_BLOCKED',
+            reason: check.reason,
+          });
+          continue;
+        }
+
+        // Origin guard - same-origin by default, explicit opt-in for more.
+        const parsed = new URL(check.url);
+        const origin = parsed.origin.toLowerCase();
+        const host = parsed.hostname.toLowerCase();
+        const originOk =
+          origin === pageOrigin ||
+          allowedOrigins.includes(origin) ||
+          allowedOriginSuffixes.some((suffix) => {
+            const bare = suffix.replace(/^\.+/, '');
+            return host === bare || host.endsWith(`.${bare}`);
+          });
+        if (!originOk) {
+          logBrowserEvent('BROWSER_EVENT', {
+            action: 'FRAME_BLOCKED',
+            reason: 'frame origin is not allowed',
+            origin,
+          });
+          continue;
+        }
+
+        let contains = false;
+        try {
+          contains = (await pwFrame.evaluate(
+            `(function (s) { return document.querySelector(s) !== null; })(${JSON.stringify(selector)})`
+          )) as boolean;
+        } catch {
+          // Frame detached or not committed yet - try again on the next pass.
+          continue;
+        }
+        if (contains) {
+          logBrowserEvent('BROWSER_EVENT', { action: 'FRAME_SELECTED', origin });
+          return new JaaFrame(pwFrame, this.config, allowedOriginSuffixes, [
+            pageOrigin,
+            ...allowedOrigins,
+          ]);
+        }
+      }
+      if (Date.now() >= deadline) return null;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+}
+
+// ============================================================================
+// Frame wrapper - narrow, validated interaction with iframe content
+// ============================================================================
+
+/**
+ * Wrapper around a Playwright Frame, produced ONLY by
+ * `JaaPage.frameContaining`. It exposes the same minimal interaction subset
+ * as {@link JaaPage} and re-validates the frame URL and origin before EVERY
+ * call: a frame that navigated to a blocked URL or a disallowed origin is
+ * refused from that point on. There is no navigation API.
+ */
+export class JaaFrame {
+  constructor(
+    private readonly pwFrame: PlaywrightFrame,
+    private readonly config: BrowserConfig,
+    private readonly allowedOriginSuffixes: string[],
+    private readonly allowedOrigins: string[]
+  ) {}
+
+  url(): string {
+    return this.pwFrame.url();
+  }
+
+  /** Re-validate SSRF policy + origin policy on every interaction. */
+  private assertUsable(): string {
+    const frameUrl = this.pwFrame.url();
+    const safeUrl = assertPublicHttpUrl(frameUrl, {
+      allowPrivate: this.config.allowPrivateUrls,
+    });
+    let origin = 'null';
+    let host = '';
+    try {
+      const parsed = new URL(safeUrl);
+      origin = parsed.origin.toLowerCase();
+      host = parsed.hostname.toLowerCase();
+    } catch {
+      throw new InvalidUrlError('Frame URL could not be parsed', frameUrl);
+    }
+    const originOk =
+      this.allowedOrigins.includes(origin) ||
+      this.allowedOriginSuffixes.some((suffix) => {
+        const bare = suffix.replace(/^\.+/, '');
+        return host === bare || host.endsWith(`.${bare}`);
+      });
+    if (!originOk) {
+      logBrowserEvent('BROWSER_EVENT', {
+        action: 'FRAME_BLOCKED',
+        reason: 'frame origin is not allowed',
+        origin,
+      });
+      throw new UrlBlockedError('Frame origin is not allowed', frameUrl);
+    }
+    return safeUrl;
+  }
+
+  async evaluate<T>(pageFunction: string | ((arg?: unknown) => T)): Promise<T> {
+    this.assertUsable();
+    return this.pwFrame.evaluate(pageFunction);
+  }
+
+  async click(selector: string): Promise<void> {
+    this.assertUsable();
+    await this.pwFrame.click(selector, { timeout: this.config.actionTimeoutMs });
+    logBrowserEvent('ACTION_PERFORMED', { action: 'click', selector, inFrame: true });
+  }
+
+  async waitForSelector(selector: string, timeoutMs?: number): Promise<void> {
+    this.assertUsable();
+    await this.pwFrame.waitForSelector(selector, {
+      timeout: timeoutMs ?? this.config.actionTimeoutMs,
+    });
+  }
+
+  async setInputFiles(selector: string, files: string[]): Promise<void> {
+    this.assertUsable();
+    await this.pwFrame.setInputFiles(selector, files, {
+      timeout: this.config.actionTimeoutMs,
+    });
+    logBrowserEvent('ACTION_PERFORMED', {
+      action: 'setInputFiles',
+      selector,
+      fileCount: files.length,
+      inFrame: true,
+    });
   }
 }
 

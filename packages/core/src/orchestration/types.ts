@@ -30,7 +30,17 @@ export type OrchestrationErrorCode =
   | 'INSPECTION_FAILED'
   | 'PROVIDER_UNAVAILABLE'
   | 'TRANSIENT_FAILURE'
-  | 'PREPARATION_FAILED';
+  | 'PREPARATION_FAILED'
+  // Phase 15A - submission gate + submission outcomes.
+  | 'HUMAN_APPROVAL_REQUIRED'
+  | 'APPLICATION_STATE_NOT_SUBMITTABLE'
+  | 'SUBMISSION_OUTCOME_UNKNOWN'
+  | 'REQUIRED_ANSWER_MISSING'
+  | 'ANSWER_NEEDS_REVIEW'
+  | 'ANSWER_INVALID'
+  | 'SUBMISSION_FAILED'
+  | 'CAPTCHA_DETECTED'
+  | 'SECURITY_CHALLENGE';
 
 export class OrchestrationError extends Error {
   constructor(
@@ -52,6 +62,27 @@ export const PREPARATION_QUEUE_NAME = 'application-preparation';
 /** Bounded retries with exponential backoff. Deterministic failures never retry. */
 export const PREPARATION_MAX_ATTEMPTS = 3;
 export const PREPARATION_BACKOFF_MS = 5_000;
+
+/**
+ * Phase 15A - stable BullMQ queue for mock application submission. Same
+ * orchestration system, same identifiers-only payload contract
+ * (PreparationJobPayload), same bounded retry policy - a separate lane so
+ * preparation and submission jobs never interfere with each other.
+ */
+export const SUBMISSION_QUEUE_NAME = 'application-submission';
+
+/** Bounded retries with exponential backoff. Unknown outcomes never retry. */
+export const SUBMISSION_MAX_ATTEMPTS = 3;
+export const SUBMISSION_BACKOFF_MS = 5_000;
+
+/**
+ * Application statuses a submission attempt may START from (fresh): only
+ * APPROVED - the state produced exclusively by the explicit human approval
+ * action. Everything else (including FORM_INSPECTED and FAILED) is blocked.
+ */
+export const SUBMITTABLE_APPLICATION_STATUSES: readonly ApplicationStatus[] = [
+  'APPROVED',
+];
 
 /**
  * A RUNNING AutomationRun whose `updatedAt` is older than this is treated as
