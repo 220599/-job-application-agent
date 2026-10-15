@@ -9,6 +9,7 @@ import {
   listJobMatches,
   MatchServiceError,
 } from '../services/job-matching';
+import { createPreparationRegistry } from '@jaa/core';
 
 const router = Router();
 
@@ -19,6 +20,19 @@ const MATCH_ERROR_STATUS: Record<string, number> = {
   PROFILE_NOT_FOUND: 400,
   MATCH_NOT_FOUND: 404,
 };
+
+// Whether any registered ATS adapter can handle this job's application URL.
+// Computed server-side (single source of truth for board support) so the UI
+// never guesses eligibility client-side.
+function annotateApplySupport<
+  T extends { url: string; applicationUrl: string | null },
+>(jobs: T[]): Array<T & { applySupported: boolean }> {
+  const registry = createPreparationRegistry();
+  return jobs.map((job) => ({
+    ...job,
+    applySupported: Boolean(registry.findForUrl(job.applicationUrl ?? job.url)),
+  }));
+}
 
 function respondMatchError(res: Response, error: unknown): void {
   if (error instanceof MatchServiceError) {
@@ -109,7 +123,7 @@ router.get(
       const total = jobs.length;
       const paged = jobs.slice((page - 1) * pageSize, page * pageSize);
       return res.json({
-        data: paged,
+        data: annotateApplySupport(paged),
         pagination: { page, pageSize, total },
       });
     }
@@ -132,7 +146,7 @@ router.get(
     ]);
 
     res.json({
-      data: jobs,
+      data: annotateApplySupport(jobs),
       pagination: {
         page,
         pageSize,
@@ -209,6 +223,25 @@ router.get(
     }
 
     res.json({ data: job });
+  })
+);
+
+// DELETE /api/jobs/:id - remove a job the user owns. Ownership-checked; a
+// missing and a foreign job are indistinguishable 404s. The job's
+// applications cascade with it (schema onDelete: Cascade).
+router.delete(
+  '/:id',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = req.userId!;
+    const { id } = req.params;
+    const job = await prisma.job.findFirst({ where: { id, userId } });
+    if (!job) {
+      return res.status(404).json({
+        error: { code: 'NOT_FOUND', message: 'Job not found' },
+      });
+    }
+    await prisma.job.delete({ where: { id: job.id } });
+    res.json({ data: { id: job.id } });
   })
 );
 

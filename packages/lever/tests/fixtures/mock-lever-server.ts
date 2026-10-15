@@ -509,6 +509,12 @@ export async function startMockLeverServer(host = '127.0.0.1'): Promise<MockLeve
 
     if (req.method === 'GET') {
       if (url === '/' || url === '') return html(APPLY_PAGE_HTML);
+      // Posting-shaped paths (the documented applyUrl shape
+      // `/{site}/{posting}` or `/{site}/{posting}/apply`) serve the same
+      // CAPTCHA-FREE application form - the Phase 15C API-path E2E drives
+      // the real pipeline through these URLs. The captcha-bearing root page
+      // stays available at `/` for challenge-detection tests.
+      if (/^\/[^/]+\/[^/]+(?:\/apply)?$/.test(url)) return html(APPLY_PAGE_NO_CAPTCHA_HTML);
       if (url === '/no-form') return html(NO_FORM_HTML);
       if (url === '/generic-form') return html(GENERIC_FORM_HTML);
       if (url === '/foreign') return html(FOREIGN_FORM_HTML);

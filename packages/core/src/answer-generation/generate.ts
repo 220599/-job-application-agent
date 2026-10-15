@@ -27,6 +27,8 @@ import { classifyQuestion } from './classify';
 import { deterministicAnswer } from './deterministic';
 import { aiAnswer } from './ai';
 import { buildCandidateContext } from './facts';
+import { OrchestrationError } from '../orchestration/types';
+import { invalidateApproval } from '../application-submission';
 
 export async function generateAnswerForQuestion(
   question: QuestionInput,
@@ -201,6 +203,15 @@ export async function generateApplicationAnswers(
     throw new Error(`APPLICATION_NOT_FOUND: ${params.applicationId}`);
   }
 
+  // Phase 15D - content integrity: in-flight and submitted applications are
+  // immutable (a submission is never affected by later rewrites).
+  if (application.status === 'SUBMITTING' || application.status === 'SUBMITTED') {
+    throw new OrchestrationError(
+      'APPLICATION_TERMINAL',
+      `Application content cannot be changed while the application is ${application.status}`
+    );
+  }
+
   const profile = await prisma.candidateProfile.findUnique({
     where: { userId: application.userId },
     include: { experience: true, education: true, skills: true },
@@ -262,6 +273,9 @@ export async function generateApplicationAnswers(
   let skippedApproved = 0;
   let needsReviewCount = 0;
   let errors = 0;
+  // Phase 15D - approval integrity: tracks whether any ANSWER TEXT actually
+  // changed (the snapshot binds answer text).
+  let answerTextChanged = false;
 
   for (const question of targetQuestions) {
     const prior = answerByQuestion.get(question.id);
@@ -327,6 +341,10 @@ export async function generateApplicationAnswers(
       }
     }
 
+    if ((prior?.answer ?? null) !== (draft.answer ?? null)) {
+      answerTextChanged = true;
+    }
+
     // Audit event: never logs answer text or candidate data.
     await prisma.applicationEvent.create({
       data: {
@@ -381,6 +399,15 @@ export async function generateApplicationAnswers(
       errorCode: draft.errorCode,
       skippedApproved: false,
     });
+  }
+
+  // Phase 15D - approval integrity: approved content changed -> the approval
+  // no longer covers the application and is invalidated (never silently).
+  // The user must explicitly approve the NEW content before anything can be
+  // submitted. A regeneration that changes no answer text leaves the
+  // approval intact.
+  if (application.status === 'APPROVED' && answerTextChanged) {
+    await invalidateApproval({ application, code: 'APPROVAL_STALE', drift: ['ANSWERS'] });
   }
 
   // One summary review signal when anything needs human review.

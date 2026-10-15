@@ -9,6 +9,9 @@ import {
   cancelApplicationAutomationRun,
   approveApplicationForSubmission,
   requestApplicationSubmission,
+  getSubmissionStatus,
+  getSubmissionStatuses,
+  createPreparationRegistry,
   isOrchestrationError,
   type OrchestrationErrorCode,
 } from '@jaa/core';
@@ -54,6 +57,9 @@ export const ORCHESTRATION_ERROR_STATUS: Record<OrchestrationErrorCode, number> 
   PREPARATION_FAILED: 500,
   // Phase 15A submission gate + outcomes.
   HUMAN_APPROVAL_REQUIRED: 409,
+  // Phase 15D - approval integrity (snapshot binding).
+  APPROVAL_NOT_VERIFIED: 409,
+  APPROVAL_STALE: 409,
   APPLICATION_STATE_NOT_SUBMITTABLE: 409,
   SUBMISSION_OUTCOME_UNKNOWN: 409,
   REQUIRED_ANSWER_MISSING: 422,
@@ -72,6 +78,15 @@ function sendOrchestrationError(res: Response, err: unknown): void {
     return;
   }
   throw err;
+}
+
+// The approval snapshot is internal verification data (hashes + identifiers).
+// It never crosses the API boundary; clients get the derived user-facing
+// `submissionStatus` instead.
+function safeApplicationRow<T extends object>(application: T): Omit<T, 'approvalSnapshot'> {
+  const rest = { ...application } as Record<string, unknown>;
+  delete rest['approvalSnapshot'];
+  return rest as Omit<T, 'approvalSnapshot'>;
 }
 
 // GET /api/applications - List applications
@@ -127,8 +142,14 @@ router.get(
       }),
     ]);
 
+    // Client-safe rows with the derived, authoritative submission status:
+    // queue completion alone never reports success.
+    const statuses = await getSubmissionStatuses(applications);
     res.json({
-      data: applications,
+      data: applications.map((application) => ({
+        ...safeApplicationRow(application),
+        submissionStatus: statuses.get(application.id) ?? null,
+      })),
       pagination: {
         page,
         pageSize,
@@ -170,7 +191,184 @@ router.get(
       });
     }
 
-    res.json({ data: application });
+    res.json({
+      data: {
+        ...safeApplicationRow(application),
+        submissionStatus: await getSubmissionStatus(application),
+      },
+    });
+  })
+);
+
+// POST /api/applications - create (or return) the application for a job.
+// This is the UI "Apply" action: the ONLY way an application comes into
+// existence through the product surface (previously seed/tests only).
+//
+// Semantics:
+//  - everything is validated BEFORE anything is created: unknown/foreign job
+//    404, invalid application URL or unsupported ATS 422, unapproved/missing
+//    resume 422 - refusal never leaves a partial application behind;
+//  - idempotent per (user, job): a second click returns the existing row with
+//    `alreadyExists: true`, never a duplicate application;
+//  - it never queues anything and never claims success: preparation is a
+//    separate explicit step (POST /:id/prepare) and submission requires the
+//    explicit approval below. The response carries only the persisted state.
+router.post(
+  '/',
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = requireUser(req, res);
+    if (!userId) return;
+
+    const body = req.body ?? {};
+    const { jobId, resumeVersionId } = body;
+    if (typeof jobId !== 'string' || jobId.trim() === '') {
+      return res.status(400).json({
+        error: { code: 'VALIDATION_ERROR', message: 'jobId must be a non-empty string' },
+      });
+    }
+    if (
+      resumeVersionId !== undefined &&
+      (typeof resumeVersionId !== 'string' || resumeVersionId.trim() === '')
+    ) {
+      return res.status(400).json({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'resumeVersionId must be a non-empty string',
+        },
+      });
+    }
+
+    const job = await prisma.job.findFirst({ where: { id: jobId, userId } });
+    if (!job) {
+      // Missing and foreign jobs are indistinguishable on purpose.
+      return res.status(404).json({
+        error: { code: 'NOT_FOUND', message: 'Job not found' },
+      });
+    }
+
+    // Duplicate prevention: one application per (user, job).
+    const existing = await prisma.application.findFirst({
+      where: { userId, jobId: job.id },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (existing) {
+      return res.status(200).json({
+        data: {
+          ...safeApplicationRow(existing),
+          submissionStatus: await getSubmissionStatus(existing),
+        },
+        alreadyExists: true,
+      });
+    }
+
+    // Target validation BEFORE creating anything (same safety order as the
+    // preparation gate): an invalid URL or an unsupported ATS refuses here,
+    // and no application row is created.
+    const applicationUrl = job.applicationUrl ?? job.url;
+    let parsed: URL;
+    try {
+      parsed = new URL(applicationUrl);
+    } catch {
+      return res.status(422).json({
+        error: {
+          code: 'INVALID_APPLICATION_URL',
+          message: 'The job has no valid application URL',
+        },
+      });
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return res.status(422).json({
+        error: {
+          code: 'INVALID_APPLICATION_URL',
+          message: 'Application URL must use http or https',
+        },
+      });
+    }
+    const adapter = createPreparationRegistry().findForUrl(applicationUrl);
+    if (!adapter) {
+      return res.status(422).json({
+        error: {
+          code: 'UNSUPPORTED_ATS',
+          message: 'No supported ATS provider can handle this job posting',
+        },
+      });
+    }
+
+    // Resume selection: an explicit version must belong to the user and be
+    // APPROVED; without one, resolve the default (default resume first, then
+    // newest approved version). Preparation re-verifies all of this.
+    let version;
+    if (resumeVersionId !== undefined) {
+      version = await prisma.resumeVersion.findUnique({
+        where: { id: resumeVersionId },
+        include: { resume: true },
+      });
+      if (!version || version.resume.userId !== userId) {
+        return res.status(404).json({
+          error: { code: 'NOT_FOUND', message: 'Resume version not found' },
+        });
+      }
+      if (version.reviewStatus !== 'APPROVED') {
+        return res.status(422).json({
+          error: {
+            code: 'RESUME_NOT_APPROVED',
+            message: 'The resume version must be approved before applying',
+          },
+        });
+      }
+    } else {
+      version =
+        (await prisma.resumeVersion.findFirst({
+          where: { reviewStatus: 'APPROVED', resume: { userId, isDefault: true } },
+          orderBy: { versionNumber: 'desc' },
+        })) ??
+        (await prisma.resumeVersion.findFirst({
+          where: { reviewStatus: 'APPROVED', resume: { userId } },
+          orderBy: { versionNumber: 'desc' },
+        }));
+      if (!version) {
+        return res.status(422).json({
+          error: {
+            code: 'RESUME_NOT_APPROVED',
+            message: 'Approve a resume version before applying',
+          },
+        });
+      }
+    }
+
+    const application = await prisma.application.create({
+      data: {
+        userId,
+        jobId: job.id,
+        resumeVersionId: version.id,
+        ats: adapter.provider,
+        applicationUrl,
+        status: 'DISCOVERED',
+        events: {
+          create: [
+            {
+              userId,
+              eventType: 'APPLICATION_CREATED',
+              status: 'DISCOVERED',
+              message: 'Application created from the jobs list',
+            },
+            {
+              userId,
+              eventType: 'RESUME_SELECTED',
+              message: `Approved resume version ${version.versionNumber} selected for this application`,
+            },
+          ],
+        },
+      },
+    });
+
+    return res.status(201).json({
+      data: {
+        ...safeApplicationRow(application),
+        submissionStatus: await getSubmissionStatus(application),
+      },
+      alreadyExists: false,
+    });
   })
 );
 
@@ -338,7 +536,10 @@ router.post(
           error: { code: 'NOT_FOUND', message: 'Application not found' },
         });
       }
-      throw err;
+      // Phase 15D: content mutations are state-guarded (in-flight/submitted
+      // content is locked; changing approved content invalidates the
+      // approval) - report those honestly instead of a generic 500.
+      sendOrchestrationError(res, err);
     }
   })
 );
@@ -366,12 +567,17 @@ router.post(
       });
     }
 
-    const result = await generateApplicationAnswers({
-      applicationId: id,
-      userId,
-      questionIds: [questionId],
-    });
-    res.json({ data: result });
+    try {
+      const result = await generateApplicationAnswers({
+        applicationId: id,
+        userId,
+        questionIds: [questionId],
+      });
+      res.json({ data: result });
+    } catch (err) {
+      // Phase 15D: same state guards and honest reporting as the bulk route.
+      sendOrchestrationError(res, err);
+    }
   })
 );
 

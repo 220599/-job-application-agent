@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import * as path from 'path';
 import { prisma } from '@jaa/database';
 import type { ApplicationStatus } from '@jaa/database';
+import { Prisma } from '@prisma/client';
 import type { Application, AutomationRun, ResumeVersion } from '@prisma/client';
 import { launchBrowser } from '@jaa/browser';
 import type { JaaBrowserContext } from '@jaa/browser';
@@ -28,6 +29,12 @@ import {
   safeErrorMessage,
 } from './orchestration/types';
 import { assertSubmissionTarget, resolveSubmissionMode } from './submission-policy';
+import {
+  computeApprovalSnapshot,
+  verifyApprovalSnapshot,
+  type ApprovalDrift,
+  type ApprovalSnapshotInput,
+} from './approval-snapshot';
 
 /**
  * Phase 15A/15B - Application submission workflow (packages/core).
@@ -155,12 +162,168 @@ export async function findUnresolvedSubmissionAttempt(
   return null;
 }
 
+/**
+ * Batch form of {@link findUnresolvedSubmissionAttempt}: applicationId ->
+ * unresolved attemptId, for every application that has one.
+ */
+export async function findUnresolvedSubmissionAttempts(
+  applicationIds: string[]
+): Promise<Map<string, string>> {
+  const unresolved = new Map<string, string>();
+  if (applicationIds.length === 0) return unresolved;
+  const events = await prisma.applicationEvent.findMany({
+    where: {
+      applicationId: { in: applicationIds },
+      eventType: { in: [...LEDGER_EVENT_TYPES] },
+    },
+    select: { applicationId: true, eventType: true, metadata: true },
+    orderBy: { createdAt: 'asc' },
+  });
+  const started = new Map<string, Set<string>>();
+  const resolved = new Map<string, Set<string>>();
+  for (const event of events) {
+    const attemptId = attemptIdOf(event.metadata);
+    if (!attemptId) continue;
+    const target = event.eventType === 'SUBMISSION_STARTED' ? started : resolved;
+    const set = target.get(event.applicationId) ?? new Set<string>();
+    set.add(attemptId);
+    target.set(event.applicationId, set);
+  }
+  for (const [applicationId, attempts] of started) {
+    const done = resolved.get(applicationId) ?? new Set<string>();
+    for (const attemptId of attempts) {
+      if (!done.has(attemptId)) {
+        unresolved.set(applicationId, attemptId);
+        break;
+      }
+    }
+  }
+  return unresolved;
+}
+
 /** True when at least one submission attempt has ever been started. */
 export async function hasSubmissionAttemptHistory(applicationId: string): Promise<boolean> {
   const count = await prisma.applicationEvent.count({
     where: { applicationId, eventType: 'SUBMISSION_STARTED' },
   });
   return count > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Approval snapshot binding (Phase 15D - approval integrity)
+// ---------------------------------------------------------------------------
+
+type DbClient = typeof prisma | Prisma.TransactionClient;
+
+/**
+ * Load the bindable content of an application (target, resume version,
+ * questions + answers) for snapshot computation. Only identifiers and hashes
+ * ever leave this function - never answer or resume text.
+ */
+async function loadApprovalSnapshotInput(
+  client: DbClient,
+  application: Pick<Application, 'id' | 'jobId' | 'applicationUrl'> & {
+    resumeVersion?: ResumeVersion | null;
+  }
+): Promise<ApprovalSnapshotInput> {
+  const resumeVersion = application.resumeVersion ?? null;
+  const questions = await client.applicationQuestion.findMany({
+    where: { applicationId: application.id },
+    select: {
+      id: true,
+      label: true,
+      required: true,
+      fieldType: true,
+      externalFieldId: true,
+      options: true,
+      locator: true,
+      answer: { select: { answer: true } },
+    },
+    orderBy: { id: 'asc' },
+  });
+  return {
+    jobId: application.jobId,
+    applicationUrl: application.applicationUrl,
+    resumeVersion: resumeVersion
+      ? {
+          id: resumeVersion.id,
+          filePath: resumeVersion.filePath,
+          extractedText: resumeVersion.extractedText,
+          tailoring: resumeVersion.tailoring,
+          parsedData: resumeVersion.parsedData,
+        }
+      : null,
+    questions,
+  };
+}
+
+/**
+ * Invalidate an approval that no longer covers the current application
+ * content. The application returns to READY_FOR_REVIEW: a NEW explicit
+ * approval is always required before anything can be submitted. Approved
+ * content is never submitted from a stale approval, and a changed application
+ * is never silently submitted under an old approval.
+ */
+export async function invalidateApproval(params: {
+  application: Pick<Application, 'id' | 'userId'>;
+  code: 'APPROVAL_STALE' | 'APPROVAL_NOT_VERIFIED';
+  drift?: ApprovalDrift[];
+}): Promise<void> {
+  const message =
+    params.code === 'APPROVAL_NOT_VERIFIED'
+      ? 'The approval could not be verified against the current application content; a new explicit approval is required'
+      : 'The application content changed after approval; a new explicit approval is required';
+  const updated = await prisma.application.updateMany({
+    where: {
+      id: params.application.id,
+      status: { in: ['APPROVED', 'FAILED'] },
+    },
+    data: {
+      status: 'READY_FOR_REVIEW',
+      errorCode: params.code,
+      errorMessage: message,
+      approvedAt: null,
+      approvalSnapshot: Prisma.DbNull,
+    },
+  });
+  if (updated.count === 0) return;
+  await prisma.applicationEvent.create({
+    data: {
+      applicationId: params.application.id,
+      userId: params.application.userId,
+      eventType: 'REVIEW_REQUESTED',
+      status: 'READY_FOR_REVIEW',
+      message,
+      // Component names only - never question text, answers, or resume text.
+      metadata: { code: params.code, drift: params.drift ?? [] },
+    },
+  });
+}
+
+/**
+ * Early approval-integrity verification (API request path): the current
+ * application content must still EXACTLY match the approved snapshot. On
+ * drift (or an unverifiable approval) the approval is invalidated - the
+ * application returns to READY_FOR_REVIEW - and the caller must re-approve.
+ * The attempt claim re-verifies this transactionally (defense in depth).
+ */
+export async function verifyApprovalForSubmission(
+  application: Application & { resumeVersion: ResumeVersion | null }
+): Promise<void> {
+  const snapshot = computeApprovalSnapshot(
+    await loadApprovalSnapshotInput(prisma, application)
+  );
+  const verdict = verifyApprovalSnapshot(application.approvalSnapshot, snapshot);
+  if (verdict.ok) return;
+  const code =
+    verdict.reason === 'STALE' ? 'APPROVAL_STALE' : 'APPROVAL_NOT_VERIFIED';
+  await invalidateApproval({ application, code, drift: verdict.drift });
+  throw new OrchestrationError(
+    code,
+    code === 'APPROVAL_NOT_VERIFIED'
+      ? 'The approval could not be verified for the current application content; a new explicit approval is required before submission'
+      : 'The application content changed after approval; a new explicit approval is required before submission'
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +340,11 @@ export interface ApproveApplicationResult {
   status: ApplicationStatus;
   /** True when the application was already approved (idempotent no-op). */
   alreadyApproved: boolean;
+  /**
+   * True when this call re-bound the approval to changed content (a fresh
+   * approval of the CURRENT application snapshot).
+   */
+  reapproved?: boolean;
 }
 
 /**
@@ -190,18 +358,59 @@ export async function approveApplicationForSubmission(
 ): Promise<ApproveApplicationResult> {
   const application = await prisma.application.findUnique({
     where: { id: params.applicationId },
+    include: { resumeVersion: true },
   });
   if (!application || application.userId !== params.userId) {
     throw new OrchestrationError('APPLICATION_NOT_FOUND', 'Application not found');
-  }
-  if (application.status === 'APPROVED') {
-    return { applicationId: application.id, status: 'APPROVED', alreadyApproved: true };
   }
   if (TERMINAL_APPLICATION_STATUSES.includes(application.status)) {
     throw new OrchestrationError(
       'APPLICATION_TERMINAL',
       `Application is in terminal status ${application.status} and cannot be approved`
     );
+  }
+
+  // The approval binds the EXACT content being approved: target, resume
+  // version (identity + content), and every question + answer.
+  const snapshotInput = await loadApprovalSnapshotInput(prisma, application);
+  const snapshot = computeApprovalSnapshot(snapshotInput);
+
+  if (application.status === 'APPROVED') {
+    const verdict = verifyApprovalSnapshot(application.approvalSnapshot, snapshot);
+    if (verdict.ok) {
+      // Idempotent no-op: nothing changed since the approval.
+      return { applicationId: application.id, status: 'APPROVED', alreadyApproved: true };
+    }
+    // The content drifted (or this row's approval was never bound): this
+    // fresh approval action covers the CURRENT content - re-bind it.
+    await prisma.$transaction([
+      prisma.application.update({
+        where: { id: application.id },
+        data: { approvedAt: new Date(), approvalSnapshot: snapshot as object },
+      }),
+      prisma.applicationEvent.create({
+        data: {
+          applicationId: application.id,
+          userId: application.userId,
+          eventType: 'REVIEW_APPROVED',
+          status: 'APPROVED',
+          message: 'Human re-approved the application after its content changed',
+          metadata: {
+            priorStatus: application.status,
+            reapproved: true,
+            // Component names only - never content.
+            drift: verdict.reason === 'STALE' ? verdict.drift : [],
+            contentHash: snapshot.contentHash,
+          },
+        },
+      }),
+    ]);
+    return {
+      applicationId: application.id,
+      status: 'APPROVED',
+      alreadyApproved: false,
+      reapproved: true,
+    };
   }
   if (application.status !== 'FORM_INSPECTED' && application.status !== 'READY_FOR_REVIEW') {
     throw new OrchestrationError(
@@ -213,7 +422,11 @@ export async function approveApplicationForSubmission(
   await prisma.$transaction([
     prisma.application.update({
       where: { id: application.id },
-      data: { status: 'APPROVED' },
+      data: {
+        status: 'APPROVED',
+        approvedAt: new Date(),
+        approvalSnapshot: snapshot as object,
+      },
     }),
     prisma.applicationEvent.create({
       data: {
@@ -222,7 +435,10 @@ export async function approveApplicationForSubmission(
         eventType: 'REVIEW_APPROVED',
         status: 'APPROVED',
         message: 'Human approved the application for submission',
-        metadata: { priorStatus: application.status },
+        metadata: {
+          priorStatus: application.status,
+          contentHash: snapshot.contentHash,
+        },
       },
     }),
   ]);
@@ -286,13 +502,41 @@ async function claimSubmissionAttempt(params: {
   submissionAttemptId: string;
   attempt: number;
   provider: string;
-}): Promise<{ claimed: boolean; reason?: 'ALREADY_SUBMITTED' | 'NOT_CLAIMABLE' }> {
+}): Promise<{
+  claimed: boolean;
+  reason?: 'ALREADY_SUBMITTED' | 'NOT_CLAIMABLE' | 'APPROVAL_NOT_VERIFIED' | 'APPROVAL_STALE';
+  drift?: ApprovalDrift[];
+  /** The snapshot-verified content to submit - exactly what was approved. */
+  verifiedContent?: ApprovalSnapshotInput;
+}> {
   const { application, submissionAttemptId, attempt, provider } = params;
   return prisma.$transaction(async (tx) => {
-    const current = await tx.application.findUnique({ where: { id: application.id } });
+    const current = await tx.application.findUnique({
+      where: { id: application.id },
+      include: { resumeVersion: true },
+    });
     if (!current) return { claimed: false, reason: 'NOT_CLAIMABLE' as const };
     if (current.status === 'SUBMITTED') {
       return { claimed: false, reason: 'ALREADY_SUBMITTED' as const };
+    }
+
+    // Approval integrity (Phase 15D): the request that is about to be sent
+    // must be EXACTLY what the human approved. The snapshot fingerprint is
+    // recomputed from the current rows inside this transaction - a resume
+    // swap, an answer edit, a target change, or an approval flag set without
+    // the server-side approval action all refuse the claim here (fail
+    // closed), before any state change and long before any request. The
+    // verified content is handed to the caller so the submission itself uses
+    // exactly this snapshot - never anything newer.
+    const verifiedContent = await loadApprovalSnapshotInput(tx, current);
+    const currentSnapshot = computeApprovalSnapshot(verifiedContent);
+    const verdict = verifyApprovalSnapshot(current.approvalSnapshot, currentSnapshot);
+    if (!verdict.ok) {
+      return {
+        claimed: false,
+        reason: verdict.reason === 'STALE' ? 'APPROVAL_STALE' : 'APPROVAL_NOT_VERIFIED',
+        drift: verdict.drift,
+      };
     }
 
     // Fresh attempts require the explicit human approval state. Retries may
@@ -348,7 +592,7 @@ async function claimSubmissionAttempt(params: {
         metadata: { submissionAttemptId, attempt, provider },
       },
     });
-    return { claimed: true };
+    return { claimed: true, verifiedContent };
   });
 }
 
@@ -506,6 +750,22 @@ export async function submitApplication(
     provider,
   });
   if (!claim.claimed) {
+    if (claim.reason === 'APPROVAL_STALE' || claim.reason === 'APPROVAL_NOT_VERIFIED') {
+      // The approval no longer covers what would be submitted. Invalidate it
+      // (the application returns to "awaiting approval") and stop - nothing
+      // is ever submitted from a stale or unverified approval.
+      await invalidateApproval({
+        application,
+        code: claim.reason,
+        drift: claim.drift,
+      });
+      throw new OrchestrationError(
+        claim.reason,
+        claim.reason === 'APPROVAL_NOT_VERIFIED'
+          ? 'The approval could not be verified for the current application content; a new explicit approval is required before submission'
+          : 'The application content changed after approval; a new explicit approval is required before submission'
+      );
+    }
     return {
       outcome: 'SKIPPED',
       applicationId: application.id,
@@ -530,13 +790,14 @@ export async function submitApplication(
 
   const applicationUrl = application.applicationUrl;
 
-  // 3. Count only - the MOCK envelope carries counts, never content.
-  const [fieldCount, requiredAnswerCount] = await Promise.all([
-    prisma.applicationQuestion.count({ where: { applicationId: application.id } }),
-    prisma.applicationQuestion.count({
-      where: { applicationId: application.id, required: true },
-    }),
-  ]);
+  // 3. Build the submission content from the SNAPSHOT-VERIFIED data returned
+  //    by the claim transaction: exactly what the human approved, never
+  //    anything newer (a concurrent edit cannot change what is sent). Only
+  //    counts enter the MOCK envelope - never content.
+  const verifiedContent = claim.verifiedContent!;
+  const questions = verifiedContent.questions;
+  const fieldCount = questions.length;
+  const requiredAnswerCount = questions.filter((question) => question.required).length;
 
   // Mode is decided by the server from the URL alone (never by a client).
   // The prepared values are kept in memory so the adapter can fill the form
@@ -546,10 +807,6 @@ export async function submitApplication(
   const submissionMode: AtsSubmissionMode = applicationUrl
     ? resolveSubmissionMode(applicationUrl)
     : 'MOCK';
-  const questions = await prisma.applicationQuestion.findMany({
-    where: { applicationId: application.id },
-    include: { answer: true },
-  });
   const fieldFills: AtsFieldFill[] = questions.flatMap((question) => {
     const value = question.answer?.answer ?? '';
     if (value.trim().length === 0) return [];
@@ -569,7 +826,7 @@ export async function submitApplication(
       },
     ];
   });
-  const resumePath = application.resumeVersion?.filePath ?? null;
+  const resumePath = verifiedContent.resumeVersion?.filePath ?? null;
   const resumeFile: string | null = resumePath
     ? path.isAbsolute(resumePath)
       ? resumePath

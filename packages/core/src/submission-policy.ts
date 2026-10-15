@@ -14,11 +14,12 @@ import { OrchestrationError } from './orchestration/types';
  *  - MOCK  : a LOOPBACK target. Requires the Phase 15A mock opt-in
  *            (`JAA_ALLOW_MOCK_SUBMISSION=true`) and is never allowed in
  *            production. This is unchanged from Phase 15A.
- *  - REAL  : a non-loopback target. Requires the Phase 15B capability flag
- *            (`JAA_REAL_GREENHOUSE_SUBMISSION_ENABLED=true`), must be a
- *            recognized GREENHOUSE application URL, and must pass the
- *            public-URL (SSRF) policy. Lever stays mock-only: real Lever
- *            submission is Phase 15C and is refused here.
+ *  - REAL  : a non-loopback target. Requires the provider's own capability
+ *            flag (Phase 15B: `JAA_REAL_GREENHOUSE_SUBMISSION_ENABLED=true`
+ *            for Greenhouse, Phase 15C: `JAA_REAL_LEVER_SUBMISSION_ENABLED
+ *            =true` for Lever), must be a recognized application URL for
+ *            THAT provider, and must pass the public-URL (SSRF) policy.
+ *            One provider's capability can never enable another's.
  *
  * The capability is controlled ONLY by the server environment. A client can
  * never enable it: no request field, header, or body value is consulted.
@@ -29,8 +30,12 @@ import { OrchestrationError } from './orchestration/types';
 /** The single server-side switch for controlled real Greenhouse submission. */
 export const REAL_GREENHOUSE_SUBMISSION_FLAG = 'JAA_REAL_GREENHOUSE_SUBMISSION_ENABLED';
 
-/** The only provider allowed a real (non-loopback) submission in 15B. */
+/** The single server-side switch for controlled real Lever submission (15C). */
+export const REAL_LEVER_SUBMISSION_FLAG = 'JAA_REAL_LEVER_SUBMISSION_ENABLED';
+
+/** Providers allowed a real (non-loopback) submission, under their own flag. */
 export const REAL_SUBMISSION_PROVIDER = 'GREENHOUSE';
+export const REAL_LEVER_SUBMISSION_PROVIDER = 'LEVER';
 
 export type SubmissionTargetMode = 'MOCK' | 'REAL';
 
@@ -100,6 +105,35 @@ export function assertRealGreenhouseSubmissionEnabled(): void {
   }
 }
 
+/** Real Lever submission capability (Phase 15C). Server environment only. */
+export function isRealLeverSubmissionEnabled(): boolean {
+  return process.env[REAL_LEVER_SUBMISSION_FLAG] === 'true';
+}
+
+/** Fail closed when the Lever real-submission capability is not explicitly enabled. */
+export function assertRealLeverSubmissionEnabled(): void {
+  if (!isRealLeverSubmissionEnabled()) {
+    throw new OrchestrationError(
+      'BLOCKED_BY_SECURITY_POLICY',
+      `Real Lever submission is disabled: set ${REAL_LEVER_SUBMISSION_FLAG}=true on the server to enable it`
+    );
+  }
+}
+
+/**
+ * Fail closed unless AT LEAST ONE real-submission capability is explicitly
+ * enabled. Used as the early gate BEFORE a provider is resolved - the full
+ * per-provider policy still runs afterwards.
+ */
+export function assertAnyRealSubmissionCapabilityEnabled(): void {
+  if (!isRealGreenhouseSubmissionEnabled() && !isRealLeverSubmissionEnabled()) {
+    throw new OrchestrationError(
+      'BLOCKED_BY_SECURITY_POLICY',
+      `Real submission is disabled: set ${REAL_GREENHOUSE_SUBMISSION_FLAG}=true (Greenhouse) or ${REAL_LEVER_SUBMISSION_FLAG}=true (Lever) on the server to enable it`
+    );
+  }
+}
+
 /**
  * Decide the submission mode from the target URL alone. Loopback is always
  * the mock boundary; anything else is a real target and is only reachable
@@ -155,6 +189,45 @@ export function assertRealGreenhouseSubmissionTarget(
 }
 
 /**
+ * The real-submission target policy for Lever (Phase 15C). A real Lever
+ * target must:
+ *
+ *  1. have the real Lever capability explicitly enabled (fail closed - the
+ *     Greenhouse capability can never enable Lever and vice versa);
+ *  2. be a recognized LEVER application URL;
+ *  3. never be loopback (that is the mock boundary, not a real target);
+ *  4. pass the public-URL (SSRF) policy - never relaxed.
+ */
+export function assertRealLeverSubmissionTarget(
+  applicationUrl: string,
+  provider: string | null | undefined
+): void {
+  assertRealLeverSubmissionEnabled();
+
+  if (provider !== REAL_LEVER_SUBMISSION_PROVIDER) {
+    throw new OrchestrationError(
+      'BLOCKED_BY_SECURITY_POLICY',
+      'Real Lever submission is only permitted for Lever; this target is not a recognized Lever application URL'
+    );
+  }
+
+  if (isLoopbackUrl(applicationUrl)) {
+    throw new OrchestrationError(
+      'BLOCKED_BY_SECURITY_POLICY',
+      'Real submission must target a real Lever host, never a loopback mock server'
+    );
+  }
+
+  const check = validatePublicHttpUrl(applicationUrl, { allowPrivate: false });
+  if (!check.valid) {
+    throw new OrchestrationError(
+      'BLOCKED_BY_SECURITY_POLICY',
+      `Real submission target rejected by URL safety policy: ${check.reason}`
+    );
+  }
+}
+
+/**
  * Enforce the full submission target policy and return the mode. `provider`
  * must already be resolved from the ATS registry (Greenhouse-only is enforced
  * against it for real targets).
@@ -167,6 +240,10 @@ export function assertSubmissionTarget(
   if (mode === 'MOCK') {
     assertMockSubmissionTarget(applicationUrl);
     return 'MOCK';
+  }
+  if (provider === REAL_LEVER_SUBMISSION_PROVIDER) {
+    assertRealLeverSubmissionTarget(applicationUrl, provider);
+    return 'REAL';
   }
   assertRealGreenhouseSubmissionTarget(applicationUrl, provider);
   return 'REAL';

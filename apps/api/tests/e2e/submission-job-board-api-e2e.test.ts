@@ -236,7 +236,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
     async function prepareAndWait(applicationId: string): Promise<void> {
       const res = await api(server.port).post(`/api/applications/${applicationId}/prepare`);
       expect(res.status).toBe(202);
-      await closeBrowserQuietly();
       const worker = await startPreparationWorker();
       try {
         await waitForRun(applicationId, (run) => run.status === 'COMPLETED', {
@@ -458,7 +457,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
       expect(JSON.stringify(jobs[0].data)).not.toContain(fixture.phone);
 
       // ---- real worker processes the job ------------------------------
-      await closeBrowserQuietly();
       const worker = await startSubmissionWorker();
       try {
         await waitForApplication(fixture.applicationId, (app) => app.status === 'SUBMITTED', {
@@ -606,7 +604,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
 
       const res = await submit(fixture.applicationId);
       expect(res.status).toBe(202);
-      await closeBrowserQuietly();
       const worker = await startSubmissionWorker();
       try {
         await waitForApplication(fixture.applicationId, (app) => app.status === 'SUBMITTED', {
@@ -652,7 +649,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
 
       const res = await submit(fixture.applicationId);
       expect(res.status).toBe(202);
-      await closeBrowserQuietly();
       const worker = await startSubmissionWorker();
       try {
         await waitForApplication(fixture.applicationId, (app) => app.status === 'SUBMITTED', {
@@ -699,7 +695,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
 
       const res = await submit(fixture.applicationId);
       expect(res.status).toBe(202);
-      await closeBrowserQuietly();
       const worker = await startSubmissionWorker();
       try {
         await waitForRun(fixture.applicationId, (run) => run.status === 'FAILED', {
@@ -772,7 +767,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
 
       const res = await submit(fixture.applicationId);
       expect(res.status).toBe(202);
-      await closeBrowserQuietly();
       const worker = await startSubmissionWorker();
       try {
         await waitForRun(fixture.applicationId, (run) => run.status === 'FAILED', {
@@ -872,7 +866,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
 
       const res = await submit(fixture.applicationId);
       expect(res.status).toBe(202);
-      await closeBrowserQuietly();
       const worker = await startSubmissionWorker();
       try {
         await waitForRun(fixture.applicationId, (run) => run.status === 'FAILED', {
@@ -920,7 +913,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
 
       const res = await submit(fixture.applicationId);
       expect(res.status).toBe(202);
-      await closeBrowserQuietly();
       const worker = await startSubmissionWorker();
       try {
         await waitForRun(fixture.applicationId, (run) => run.status === 'FAILED', {
@@ -964,7 +956,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
 
       const res = await submit(fixture.applicationId);
       expect(res.status).toBe(202);
-      await closeBrowserQuietly();
       const worker = await startSubmissionWorker();
       try {
         await waitForRun(fixture.applicationId, (run) => run.status === 'FAILED', {
@@ -1007,7 +998,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
 
       const res = await submit(fixture.applicationId);
       expect(res.status).toBe(202);
-      await closeBrowserQuietly();
       const worker = await startSubmissionWorker();
       try {
         await waitForRun(fixture.applicationId, (run) => run.status === 'FAILED', {
@@ -1060,7 +1050,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
 
       const res = await submit(fixture.applicationId);
       expect(res.status).toBe(202);
-      await closeBrowserQuietly();
       const worker = await startSubmissionWorker();
       try {
         await waitForRun(fixture.applicationId, (run) => run.status === 'FAILED', {
@@ -1134,7 +1123,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
         findUnresolvedSubmissionAttempt,
         enqueueSubmissionJob,
       } = await import('@jaa/core');
-      await closeBrowserQuietly();
       const worker = await startSubmissionWorker({
         submit: (params) =>
           submitApplication({
@@ -1167,7 +1155,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
         applicationId: fixture.applicationId,
         automationRunId: run!.id,
       });
-      await closeBrowserQuietly();
       const worker2 = await startSubmissionWorker();
       try {
         await waitForJobsSettled(fixture.applicationId, 2, 'fresh job refused');
@@ -1212,7 +1199,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
 
       const res = await submit(fixture.applicationId);
       expect(res.status).toBe(202);
-      await closeBrowserQuietly();
       const worker = await startSubmissionWorker();
       try {
         await waitForRun(fixture.applicationId, (run) => run.status === 'FAILED', {
@@ -1282,7 +1268,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
       });
       expect(await submissionJobsFor(fixture.applicationId)).toHaveLength(2);
 
-      await closeBrowserQuietly();
       const worker = await startSubmissionWorker();
       try {
         await waitForApplication(fixture.applicationId, (app) => app.status === 'SUBMITTED', {
@@ -1330,7 +1315,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
       await prepareAndWait(fixtureA.applicationId);
       await answerAndApprove(fixtureA);
       expect((await submit(fixtureA.applicationId)).status).toBe(202);
-      await closeBrowserQuietly();
       const workerA = await startSubmissionWorker();
       try {
         await waitForApplication(fixtureA.applicationId, (app) => app.status === 'SUBMITTED', {
@@ -1365,7 +1349,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
       await prepareAndWait(fixtureB.applicationId);
       await answerAndApprove(fixtureB);
       expect((await submit(fixtureB.applicationId)).status).toBe(202);
-      await closeBrowserQuietly();
       const workerB = await startSubmissionWorker();
       try {
         await waitForApplication(fixtureB.applicationId, (app) => app.status === 'SUBMITTED', {
@@ -1460,7 +1443,6 @@ describe.skipIf(!HAS_DB || !HAS_REDIS)(
 
       const res = await submit(fixture.applicationId);
       expect(res.status).toBe(202);
-      await closeBrowserQuietly();
       const worker = await startSubmissionWorker();
       try {
         await waitForRun(fixture.applicationId, (run) => run.status === 'FAILED', {

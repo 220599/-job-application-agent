@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "ATS adapter interface and registry",
   "private": true,
+  "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {

@@ -18,11 +18,95 @@ import {
   type LeverFieldSemantic,
 } from './adapter';
 import { isLeverApplicationUrl, type LeverRecognitionOptions } from './recognition';
+import {
+  LEVER_API_BASE,
+  MAX_LEVER_UPLOAD_BYTES,
+  extractLeverApplyReference,
+  fetchLeverApplyQuestions,
+  isDefinitelyNotTransmitted,
+  isLoopbackBaseUrl,
+  parseLeverApplyQuestions,
+  resolveLeverApiBase,
+  submitLeverApplyApplication,
+  uploadLeverApplyFile,
+  validateLeverApplyApplication,
+  validateLeverUploadFile,
+  type LeverApplyField,
+  type LeverApplyFieldOption,
+  type LeverApplyInput,
+  type LeverApplyPersonalValue,
+  type LeverApplyQuestionSet,
+  type LeverApplyQuestions,
+  type LeverApplySubmissionOptions,
+  type LeverApplySubmissionResult,
+  type LeverApplyViolation,
+  type LeverUploadResult,
+} from './apply-api';
+import {
+  LEVER_API_BASE_ENV,
+  LEVER_API_KEY_ENV,
+  buildLeverApplyInput,
+  parseLeverPostingTarget,
+  resolveLeverApiConfig,
+  selectLeverSubmissionPath,
+  withLeverResumeUri,
+  type LeverApiConfig,
+  type LeverApplyInputBuild,
+  type LeverPostingTarget,
+  type LeverSubmissionPath,
+  type LeverSubmissionPathSelection,
+} from './apply-submission';
 
 export { LeverAtsAdapter, LEVER_PROVIDER, classifyLeverField };
 export type { LeverAdapterOptions, LeverFieldSemantic };
 export { isLeverApplicationUrl };
 export type { LeverRecognitionOptions };
+
+// Documented Apply API client (Phase 15C)
+export {
+  LEVER_API_BASE,
+  MAX_LEVER_UPLOAD_BYTES,
+  extractLeverApplyReference,
+  fetchLeverApplyQuestions,
+  isDefinitelyNotTransmitted,
+  isLoopbackBaseUrl,
+  parseLeverApplyQuestions,
+  resolveLeverApiBase,
+  submitLeverApplyApplication,
+  uploadLeverApplyFile,
+  validateLeverApplyApplication,
+  validateLeverUploadFile,
+};
+export type {
+  LeverApplyField,
+  LeverApplyFieldOption,
+  LeverApplyInput,
+  LeverApplyPersonalValue,
+  LeverApplyQuestionSet,
+  LeverApplyQuestions,
+  LeverApplySubmissionOptions,
+  LeverApplySubmissionResult,
+  LeverApplyViolation,
+  LeverUploadResult,
+};
+
+// Path selection + answer mapping (Phase 15C)
+export {
+  LEVER_API_BASE_ENV,
+  LEVER_API_KEY_ENV,
+  buildLeverApplyInput,
+  parseLeverPostingTarget,
+  resolveLeverApiConfig,
+  selectLeverSubmissionPath,
+  withLeverResumeUri,
+};
+export type {
+  LeverApiConfig,
+  LeverApplyInputBuild,
+  LeverPostingTarget,
+  LeverSubmissionPath,
+  LeverSubmissionPathSelection,
+};
 export type { LeverRawField, LeverRawFieldKind, LeverRawOption, LeverRawScan } from './dom-scan';
 
 /**

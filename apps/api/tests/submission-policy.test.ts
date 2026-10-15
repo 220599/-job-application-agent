@@ -13,11 +13,16 @@ process.env.DATABASE_URL =
 
 const {
   REAL_GREENHOUSE_SUBMISSION_FLAG,
+  REAL_LEVER_SUBMISSION_FLAG,
   isLoopbackUrl,
   resolveSubmissionMode,
   isRealGreenhouseSubmissionEnabled,
+  isRealLeverSubmissionEnabled,
   assertRealGreenhouseSubmissionEnabled,
+  assertRealLeverSubmissionEnabled,
+  assertAnyRealSubmissionCapabilityEnabled,
   assertRealGreenhouseSubmissionTarget,
+  assertRealLeverSubmissionTarget,
   assertMockSubmissionTarget,
   assertSubmissionTarget,
 } = await import('@jaa/core');
@@ -30,23 +35,28 @@ const {
  *
  *  - MOCK  : loopback only + `JAA_ALLOW_MOCK_SUBMISSION=true` opt-in +
  *            never in production (unchanged Phase 15A behavior);
- *  - REAL  : the `JAA_REAL_GREENHOUSE_SUBMISSION_ENABLED` capability must be
- *            explicitly on, GREENHOUSE only (Lever is mock-only in 15B),
- *            never loopback, and SSRF public-URL validated.
+ *  - REAL  : each provider's OWN capability flag must be explicitly on
+ *            (`JAA_REAL_GREENHOUSE_SUBMISSION_ENABLED` for Greenhouse,
+ *            `JAA_REAL_LEVER_SUBMISSION_ENABLED` for Lever - Phase 15C),
+ *            the target must belong to THAT provider, never loopback, and
+ *            SSRF public-URL validated. One flag can never enable the
+ *            other provider.
  *
  * There is deliberately no "allow any URL" escape hatch.
  */
 
 const FLAG = REAL_GREENHOUSE_SUBMISSION_FLAG;
+const LEVER_FLAG = REAL_LEVER_SUBMISSION_FLAG;
 const REAL_GREENHOUSE_URL = 'https://job-boards.greenhouse.io/acme/jobs/12345';
 const REAL_LEVER_URL = 'https://jobs.lever.co/acme/12345';
 
-const ENV_KEYS = [FLAG, 'JAA_ALLOW_MOCK_SUBMISSION', 'NODE_ENV'] as const;
+const ENV_KEYS = [FLAG, LEVER_FLAG, 'JAA_ALLOW_MOCK_SUBMISSION', 'NODE_ENV'] as const;
 let savedEnv: Record<string, string | undefined> = {};
 
 beforeEach(() => {
   savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
   delete process.env[FLAG];
+  delete process.env[LEVER_FLAG];
   delete process.env.JAA_ALLOW_MOCK_SUBMISSION;
 });
 
@@ -93,18 +103,61 @@ describe('submission target policy - capability fails closed', () => {
     expect(isRealGreenhouseSubmissionEnabled()).toBe(false);
   });
 
-  it('the capability can never enable Lever (Phase 15C) - Greenhouse only', () => {
+  it('one capability can never enable the OTHER provider (Phase 15C: Lever needs its own flag)', () => {
+    // Greenhouse capability on -> Lever is still refused fail-closed.
     process.env[FLAG] = 'true';
+    expect(isRealLeverSubmissionEnabled()).toBe(false);
     expect(() => assertSubmissionTarget(REAL_LEVER_URL, 'LEVER')).toThrowError(
-      /only permitted for Greenhouse/i
+      /JAA_REAL_LEVER_SUBMISSION_ENABLED/
     );
-    expect(() => assertRealGreenhouseSubmissionTarget(REAL_LEVER_URL, 'LEVER')).toThrowError(
-      /only permitted for Greenhouse/i
+    // Lever capability on -> Greenhouse is still refused fail-closed.
+    delete process.env[FLAG];
+    process.env[LEVER_FLAG] = 'true';
+    expect(isRealGreenhouseSubmissionEnabled()).toBe(false);
+    expect(() => assertSubmissionTarget(REAL_GREENHOUSE_URL, 'GREENHOUSE')).toThrowError(
+      /JAA_REAL_GREENHOUSE_SUBMISSION_ENABLED/
     );
-    // An unrecognized provider is refused the same way.
+    // An unrecognized provider is refused the same way as before (with
+    // the Greenhouse capability on, the provider check is what refuses).
+    process.env[FLAG] = 'true';
+    delete process.env[LEVER_FLAG];
     expect(() => assertSubmissionTarget(REAL_GREENHOUSE_URL, 'UNKNOWN')).toThrowError(
       /only permitted for Greenhouse/i
     );
+  });
+
+  it('an authorized real Lever target is admitted only with the Lever capability on', () => {
+    process.env[LEVER_FLAG] = 'true';
+    expect(assertSubmissionTarget(REAL_LEVER_URL, 'LEVER')).toBe('REAL');
+    // Only exactly "true" enables it - anything else stays disabled.
+    process.env[LEVER_FLAG] = 'TRUE';
+    expect(isRealLeverSubmissionEnabled()).toBe(false);
+  });
+
+  it('the Lever real target policy enforces loopback and SSRF rules exactly like Greenhouse', () => {
+    process.env[LEVER_FLAG] = 'true';
+    expect(() => assertRealLeverSubmissionTarget('http://127.0.0.1:9001/x', 'LEVER')).toThrowError(
+      /loopback/i
+    );
+    for (const url of [
+      'https://10.0.0.5/jobs/1',
+      'https://169.254.169.254/latest/meta-data',
+      'https://[fd00::1]/jobs/1',
+      'ftp://jobs.lever.co/acme/1',
+    ]) {
+      expect(() => assertRealLeverSubmissionTarget(url, 'LEVER')).toThrowError(
+        /url safety policy/i
+      );
+    }
+  });
+
+  it('the early real-capability gate is fail-closed with no flag and open with either one', () => {
+    expect(() => assertAnyRealSubmissionCapabilityEnabled()).toThrowError(/disabled/i);
+    process.env[FLAG] = 'true';
+    expect(() => assertAnyRealSubmissionCapabilityEnabled()).not.toThrow();
+    delete process.env[FLAG];
+    process.env[LEVER_FLAG] = 'true';
+    expect(() => assertAnyRealSubmissionCapabilityEnabled()).not.toThrow();
   });
 
   it('a real target must never be a loopback mock server', () => {

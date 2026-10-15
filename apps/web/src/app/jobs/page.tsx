@@ -1,8 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { jobsApi, type JobSortBy } from '@/lib/api';
+import {
+  applicationsApi,
+  jobsApi,
+  resumeApi,
+  type ApplicationSummary,
+  type JobSortBy,
+} from '@/lib/api';
+import { StatusBadge } from '@/components/submission-status-badge';
+import Link from 'next/link';
 import type { JobMatchSummary } from '@jaa/shared';
 import {
   Card,
@@ -32,6 +40,10 @@ export default function JobsPage() {
   const [urlError, setUrlError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [selectedResume, setSelectedResume] = useState<Record<string, string>>({});
+  // Synchronous duplicate-click guard: React Query's isPending only flips on
+  // a microtask, so a same-tick second click must also be blocked here.
+  const applyInFlight = useRef(false);
 
   const {
     data: jobsData,
@@ -44,6 +56,86 @@ export default function JobsPage() {
   });
 
   const jobs = jobsData?.data ?? [];
+
+  // Persisted application state (one list query, joined by jobId). The UI
+  // NEVER tracks application progress locally - every status shown below comes
+  // from the API's derived, authoritative submission status.
+  const { data: applicationsData } = useQuery({
+    queryKey: ['applications'],
+    queryFn: () => applicationsApi.list(1, 100),
+  });
+  const applicationByJob = new Map<string, ApplicationSummary>(
+    (applicationsData?.data ?? []).map((application) => [application.jobId, application])
+  );
+
+  // Approved resume versions offered by the Apply action. The server
+  // re-verifies approval on every request; this list only drives the picker.
+  const { data: approvedVersionOptions } = useQuery({
+    queryKey: ['approved-resume-versions'],
+    queryFn: async () => {
+      const resumes = await resumeApi.list(1, 50);
+      const versionsPerResume = await Promise.all(
+        resumes.data.map((resume) => resumeApi.getVersion(resume.id))
+      );
+      const options = resumes.data.flatMap((resume, index) =>
+        (versionsPerResume[index]?.data ?? [])
+          .filter((version) => version.reviewStatus === 'APPROVED')
+          .map((version) => ({
+            versionId: version.id,
+            resumeName: resume.name,
+            versionNumber: version.versionNumber,
+            isDefault: resume.isDefault,
+          }))
+      );
+      return options.sort(
+        (a, b) =>
+          Number(b.isDefault) - Number(a.isDefault) ||
+          b.versionNumber - a.versionNumber
+      );
+    },
+  });
+  const defaultVersionId = approvedVersionOptions?.[0]?.versionId;
+
+  // Apply = create (or resume) the application, then start the existing
+  // preparation workflow. Both calls are idempotent server-side; the button
+  // disables while pending so a double click cannot race two requests.
+  const applyMutation = useMutation({
+    mutationFn: async ({
+      jobId,
+      resumeVersionId,
+    }: {
+      jobId: string;
+      resumeVersionId?: string;
+    }) => {
+      const created = await applicationsApi.create({ jobId, resumeVersionId });
+      await applicationsApi.prepare(created.data.id);
+      return created;
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ['applications'] });
+      queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      setErrorMessage(null);
+      setSuccessMessage(
+        result.alreadyExists
+          ? 'An application for this job already exists - showing its current status.'
+          : 'Application created and preparation queued. Track its real status on the Applications page.'
+      );
+    },
+    onError: (err: any) => {
+      setSuccessMessage(null);
+      setErrorMessage(err?.message || 'Could not start the application');
+    },
+  });
+
+  // Preparation can be started or resumed only while it is genuinely safe to
+  // do so; terminal and unknown-outcome states never get a retry button.
+  const canResumePreparation = (application: ApplicationSummary): boolean => {
+    const status = application.submissionStatus;
+    return (
+      status?.phase === 'PREPARATION_REQUIRED' ||
+      (status?.phase === 'FAILED_BEFORE_SUBMISSION' && status.safeToRetry === true)
+    );
+  };
 
   const matchMutation = useMutation({
     mutationFn: (jobId: string) => jobsApi.calculateMatch(jobId),
@@ -73,9 +165,7 @@ export default function JobsPage() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async (id: string) => {
-      await fetch(`/api/jobs/${id}`, { method: 'DELETE' });
-    },
+    mutationFn: (id: string) => jobsApi.delete(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['jobs'] });
       setSuccessMessage('Job deleted successfully');
@@ -331,6 +421,7 @@ export default function JobsPage() {
         <div className="space-y-4">
           {jobs.map((job) => {
             const match = job.jobMatches?.[0];
+            const application = applicationByJob.get(job.id);
             return (
               <Card key={job.id}>
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -426,6 +517,118 @@ export default function JobsPage() {
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-3">
+                    {/* Application status + Apply action. The status always
+                        comes from the persisted application state; a click only
+                        ever starts or resumes preparation - it never implies
+                        that anything was submitted. */}
+                    <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/20 p-2">
+                      <span className="text-xs font-medium text-muted-foreground">
+                        Application
+                      </span>
+                      {application ? (
+                        <>
+                          <StatusBadge status={application.submissionStatus} />
+                          <Link
+                            href={`/applications/${application.id}`}
+                            className="text-sm text-primary hover:underline"
+                          >
+                            Review application
+                          </Link>
+                          {canResumePreparation(application) ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                if (applyInFlight.current || applyMutation.isPending) return;
+                                applyInFlight.current = true;
+                                applyMutation.mutate(
+                                  { jobId: job.id },
+                                  { onSettled: () => { applyInFlight.current = false; } }
+                                );
+                              }}
+                              disabled={applyMutation.isPending}
+                            >
+                              {applyMutation.isPending &&
+                              applyMutation.variables?.jobId === job.id ? (
+                                <>
+                                  <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                                  Resuming...
+                                </>
+                              ) : (
+                                'Resume preparation'
+                              )}
+                            </Button>
+                          ) : null}
+                        </>
+                      ) : job.applySupported === false ? (
+                        <>
+                          <Badge variant="outline">Unsupported board</Badge>
+                          <span className="text-xs text-muted-foreground">
+                            No automated application is possible for this board - apply
+                            manually on the employer&apos;s site.
+                          </span>
+                        </>
+                      ) : (approvedVersionOptions?.length ?? 0) === 0 ? (
+                        <>
+                          <Badge variant="outline">Resume not approved</Badge>
+                          <span className="text-xs text-muted-foreground">
+                            <Link href="/resumes" className="text-primary hover:underline">
+                              Review and approve a resume version
+                            </Link>{' '}
+                            to enable applying.
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <Badge variant="secondary">Ready to apply</Badge>
+                          <select
+                            aria-label={`Resume for ${job.title}`}
+                            value={selectedResume[job.id] ?? defaultVersionId ?? ''}
+                            onChange={(e) =>
+                              setSelectedResume((prev) => ({
+                                ...prev,
+                                [job.id]: e.target.value,
+                              }))
+                            }
+                            disabled={applyMutation.isPending}
+                            className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+                          >
+                            {(approvedVersionOptions ?? []).map((option) => (
+                              <option key={option.versionId} value={option.versionId}>
+                                {option.resumeName} · v{option.versionNumber}
+                                {option.isDefault ? ' (default)' : ''}
+                              </option>
+                            ))}
+                          </select>
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              if (applyInFlight.current || applyMutation.isPending) return;
+                              applyInFlight.current = true;
+                              applyMutation.mutate(
+                                {
+                                  jobId: job.id,
+                                  resumeVersionId:
+                                    selectedResume[job.id] ?? defaultVersionId,
+                                },
+                                { onSettled: () => { applyInFlight.current = false; } }
+                              );
+                            }}
+                            disabled={applyMutation.isPending}
+                          >
+                            {applyMutation.isPending &&
+                            applyMutation.variables?.jobId === job.id ? (
+                              <>
+                                <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                                Applying...
+                              </>
+                            ) : (
+                              'Apply'
+                            )}
+                          </Button>
+                        </>
+                      )}
+                    </div>
                     {match && renderMatchSection(match)}
                     {job.description && (
                       <div>

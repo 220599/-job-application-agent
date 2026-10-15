@@ -14,7 +14,11 @@ process.env.DATABASE_URL =
 const HAS_DB = Boolean(process.env.DATABASE_URL);
 
 const { prisma } = await import('@jaa/database');
-const { submitApplication, REAL_GREENHOUSE_SUBMISSION_FLAG } = await import('@jaa/core');
+const {
+  submitApplication,
+  approveApplicationForSubmission,
+  REAL_GREENHOUSE_SUBMISSION_FLAG,
+} = await import('@jaa/core');
 const { AtsRegistry } = await import('@jaa/ats');
 type AtsAdapter = import('@jaa/ats').AtsAdapter;
 type AtsSubmissionContext = import('@jaa/ats').AtsSubmissionContext;
@@ -111,7 +115,7 @@ async function makeApplication(applicationUrl: string) {
       resumeVersionId: version.id,
       ats: 'GREENHOUSE',
       applicationUrl,
-      status: 'APPROVED',
+      status: 'FORM_INSPECTED',
     },
   });
 
@@ -150,6 +154,14 @@ async function makeApplication(applicationUrl: string) {
       required: false,
       locator: { cssSelector: '#cover_note', attributes: {} } as object,
     },
+  });
+
+  // Phase 15D: approval binds the exact content snapshot. The explicit
+  // approval action runs AFTER the questions/answers exist, exactly like the
+  // product flow - a fabricated APPROVED flag is never submittable.
+  await approveApplicationForSubmission({
+    applicationId: application.id,
+    userId: TEST_USER_ID,
   });
 
   return { application, version, questionName, questionEmail, questionUnanswered };

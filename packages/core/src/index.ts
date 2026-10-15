@@ -47,7 +47,10 @@ export {
   approveApplicationForSubmission,
   submitApplication,
   findUnresolvedSubmissionAttempt,
+  findUnresolvedSubmissionAttempts,
   hasSubmissionAttemptHistory,
+  invalidateApproval,
+  verifyApprovalForSubmission,
   SimulatedWorkerCrash,
   isSimulatedWorkerCrash,
 } from './application-submission';
@@ -57,6 +60,37 @@ export type {
   SubmitApplicationParams,
   SubmitApplicationResult,
 } from './application-submission';
+
+// Approval integrity (Phase 15D) - the approval snapshot binds an explicit
+// approval to the exact application content (target, resume version,
+// questions/answers); drift invalidates the approval. Hashes and identifiers
+// only - never content. See ./approval-snapshot.
+export {
+  computeApprovalSnapshot,
+  verifyApprovalSnapshot,
+  approvalSnapshotOf,
+} from './approval-snapshot';
+export type {
+  ApprovalDrift,
+  ApprovalSnapshot,
+  ApprovalSnapshotInput,
+  ApprovalSnapshotVerdict,
+} from './approval-snapshot';
+
+// User-facing submission status (Phase 15D) - one derived, PII-free view of
+// where an application stands and what the user must do next. Derived from
+// authoritative state only; queue completion never means success. See
+// ./submission-status.
+export {
+  deriveSubmissionStatus,
+  getSubmissionStatus,
+  getSubmissionStatuses,
+} from './submission-status';
+export type {
+  SubmissionPhase,
+  SubmissionStatusInput,
+  SubmissionStatusView,
+} from './submission-status';
 
 // Application orchestration (Phase 13/15A) - BullMQ queues + worker
 // handlers that asynchronously run prepareApplication up to FORM_INSPECTED

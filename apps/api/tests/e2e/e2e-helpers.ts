@@ -26,6 +26,21 @@ dotenv.config({
 });
 process.env.DATABASE_URL ??= 'postgresql://user:password@localhost:5432/jaa_dev';
 
+// TEST-ONLY: run the E2E suites against their own Redis logical DB so a
+// foreign consumer (e.g. a dev apps/worker running alongside) can never
+// steal and fail the suites' jobs, and so the suites' queue resets never
+// disturb a real development queue. Queue names stay the production ones;
+// only the Redis namespace differs. Host/auth/port from REDIS_URL are
+// preserved; an unparseable URL is left untouched (fall back to shared DB).
+const testRedisDb = process.env.JAA_TEST_REDIS_DB ?? '15';
+try {
+  const redisUrl = new URL(process.env.REDIS_URL ?? 'redis://localhost:6379');
+  redisUrl.pathname = `/${testRedisDb}`;
+  process.env.REDIS_URL = redisUrl.toString();
+} catch {
+  // keep whatever REDIS_URL the environment provides
+}
+
 /**
  * TEST-ONLY (Phase 14): let the REAL registry bootstrap
  * (createPreparationRegistry in @jaa/core) recognize the loopback mock ATS
@@ -393,13 +408,21 @@ export async function startPreparationWorker(options?: {
   staleMs?: number;
 }) {
   const { createPreparationWorker } = await import('@jaa/core');
-  return createPreparationWorker({
+  const worker = createPreparationWorker({
     // Production queue name and production registry (the test-only
     // JAA_TEST_EXTRA_BOARD_HOSTS seam above adds the mock hosts).
     allowPrivateUrls: options?.allowPrivateUrls ?? true,
     concurrency: options?.concurrency ?? 1,
     ...(options?.staleMs ? { staleMs: options.staleMs } : {}),
   });
+  // Surface job failures in the test output: a failed job leaves the run
+  // FAILED and every waitFor(COMPLETED) would otherwise time out blind.
+  worker.on('failed', (job, err) => {
+    console.error(
+      `[E2E-PREP-WORKER] job ${job?.id} failed (attempt ${job?.attemptsMade}): ${err?.message}`
+    );
+  });
+  return worker;
 }
 
 /** Drain and remove the shared test queue (test isolation). */
@@ -434,7 +457,7 @@ export async function startSubmissionWorker(options?: {
   submit?: import('@jaa/core').SubmissionJobFn;
 }) {
   const { createSubmissionWorker } = await import('@jaa/core');
-  return createSubmissionWorker({
+  const worker = createSubmissionWorker({
     // Production queue name and production registry (the test-only
     // JAA_TEST_EXTRA_BOARD_HOSTS seam adds the mock hosts).
     allowPrivateUrls: options?.allowPrivateUrls ?? true,
@@ -442,6 +465,13 @@ export async function startSubmissionWorker(options?: {
     ...(options?.staleMs ? { staleMs: options.staleMs } : {}),
     ...(options?.submit ? { submit: options.submit } : {}),
   });
+  // Surface job failures in the test output (see startPreparationWorker).
+  worker.on('failed', (job, err) => {
+    console.error(
+      `[E2E-SUB-WORKER] job ${job?.id} failed (attempt ${job?.attemptsMade}): ${err?.message}`
+    );
+  });
+  return worker;
 }
 
 /** Drain and remove the shared submission test queue (test isolation). */
@@ -459,7 +489,13 @@ export async function resetSubmissionQueue(): Promise<void> {
 
 export async function waitFor<T>(
   probe: () => Promise<T | null | undefined>,
-  opts: { timeoutMs?: number; intervalMs?: number; label?: string } = {}
+  opts: {
+    timeoutMs?: number;
+    intervalMs?: number;
+    label?: string;
+    /** Extra state for the timeout error (e.g. the run row's error fields). */
+    describe?: () => Promise<string | undefined> | string | undefined;
+  } = {}
 ): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? 90_000;
   const intervalMs = opts.intervalMs ?? 250;
@@ -468,13 +504,23 @@ export async function waitFor<T>(
     const value = await probe();
     if (value !== null && value !== undefined) return value;
     if (Date.now() > deadline) {
-      throw new Error(`waitFor timed out${opts.label ? `: ${opts.label}` : ''}`);
+      const detail = opts.describe ? await opts.describe().catch(() => undefined) : undefined;
+      throw new Error(
+        `waitFor timed out${opts.label ? `: ${opts.label}` : ''}${detail ? ` (${detail})` : ''}`
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
 }
 
-/** Poll until the AutomationRun for the application satisfies `done`. */
+/**
+ * Poll until the AutomationRun for the application satisfies `done`.
+ *
+ * Note: a run may transiently sit in FAILED while a retryable job error is
+ * retried (the handler re-claims FAILED runs), so a FAILED snapshot is not
+ * by itself terminal - the timeout error surfaces the run's status,
+ * errorCode and errorMessage so a real failure is diagnosable immediately.
+ */
 export async function waitForRun(
   applicationId: string,
   done: (run: { status: string }) => boolean,
@@ -486,7 +532,18 @@ export async function waitForRun(
       const run = await prisma.automationRun.findUnique({ where: { applicationId } });
       return run && done(run) ? run : null;
     },
-    { timeoutMs: opts.timeoutMs ?? 90_000, label: opts.label ?? 'automation run' }
+    {
+      timeoutMs: opts.timeoutMs ?? 90_000,
+      label: opts.label ?? 'automation run',
+      describe: async () => {
+        const run = await prisma.automationRun.findUnique({ where: { applicationId } });
+        if (!run) return 'run row missing';
+        const errorCode = (run.metadata as { errorCode?: string } | null)?.errorCode;
+        return `run status=${run.status}${errorCode ? ` errorCode=${errorCode}` : ''}${
+          run.errorMessage ? ` errorMessage=${run.errorMessage}` : ''
+        }`;
+      },
+    }
   );
 }
 

@@ -3,8 +3,12 @@ import type { Application, ResumeVersion } from '@jaa/database';
 import type { AtsAdapter, AtsRegistry } from '@jaa/ats';
 
 import { provenanceOf } from '../resume-review';
-import { findUnresolvedSubmissionAttempt } from '../application-submission';
 import {
+  findUnresolvedSubmissionAttempt,
+  verifyApprovalForSubmission,
+} from '../application-submission';
+import {
+  assertAnyRealSubmissionCapabilityEnabled,
   assertSubmissionTarget,
   resolveSubmissionMode,
   type SubmissionTargetMode,
@@ -31,7 +35,10 @@ export { isLoopbackUrl, assertMockSubmissionTarget } from '../submission-policy'
  *   3. no earlier submission attempt has an UNKNOWN outcome;
  *   4. it is in the APPROVED state - which only the explicit human approval
  *      action can produce (never inferred from resume approval,
- *      preparation, matching, form filling, or AI confidence);
+ *      preparation, matching, form filling, or AI confidence), AND that
+ *      approval still covers the EXACT current application content
+ *      (target, resume version, questions/answers snapshot - Phase 15D;
+ *      any drift invalidates the approval and requires a new one);
  *   5. its resume version is APPROVED (PENDING/REJECTED block);
  *   6. its tailoring validation passed when tailoring provenance is present;
  *   7. every required question has a valid answer: present, not awaiting
@@ -187,11 +194,13 @@ export async function resolveSubmissionTarget(params: {
 
   // Decide the mode from the URL alone: loopback is the mock boundary,
   // anything else is a real target. A real target is refused BEFORE any
-  // provider is consulted unless the real Greenhouse capability is enabled
-  // (fail closed) - SSRF protection is never weakened by the submission path.
+  // provider is consulted unless at least one real-submission capability
+  // is enabled (fail closed) - SSRF protection is never weakened by the
+  // submission path. The full per-provider policy runs below once the
+  // provider is resolved (each provider's own capability flag).
   const submissionMode = resolveSubmissionMode(rawUrl);
   if (submissionMode === 'REAL') {
-    assertSubmissionTarget(rawUrl, null); // real capability must be on (fail closed)
+    assertAnyRealSubmissionCapabilityEnabled(); // real capability must be on (fail closed)
   }
 
   const registry = params.registry ?? createPreparationRegistry();
@@ -295,6 +304,12 @@ export async function checkSubmissionEligibility(
       `Application status ${application.status} cannot be submitted`
     );
   }
+
+  // Approval integrity (Phase 15D): the explicit approval must cover the
+  // exact content that would be submitted. Drift (a changed answer, resume
+  // swap/edit, changed target) or an unverifiable approval invalidates the
+  // approval here - a new explicit approval is always required.
+  await verifyApprovalForSubmission(application);
 
   await checkSubmissionReadiness(application);
 

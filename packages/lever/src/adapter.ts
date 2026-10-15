@@ -1,3 +1,6 @@
+import { readFile } from 'fs/promises';
+import { basename } from 'path';
+
 import type {
   AtsAdapter,
   AtsAdapterContext,
@@ -11,6 +14,7 @@ import type {
 import {
   AtsError,
   atsErrorFromBrowserError,
+  isAtsError,
   MOCK_SUBMISSION_KIND,
   buildMockSubmissionScript,
   challengeKindFor,
@@ -20,6 +24,31 @@ import {
 
 import { scanLeverPage, type LeverRawField, type LeverRawScan } from './dom-scan';
 import { isLeverApplicationUrl, type LeverRecognitionOptions } from './recognition';
+import {
+  fetchLeverApplyQuestions,
+  submitLeverApplyApplication,
+  uploadLeverApplyFile,
+  validateLeverUploadFile,
+  type LeverApplyQuestions,
+} from './apply-api';
+import {
+  buildLeverApplyInput,
+  selectLeverSubmissionPath,
+  withLeverResumeUri,
+  type LeverApiConfig,
+  type LeverPostingTarget,
+} from './apply-submission';
+import {
+  buildFillLeverFormScript,
+  buildReadLeverConfirmationScript,
+  buildSubmitLeverFormScript,
+  describeLeverRefusal,
+  interpretLeverConfirmation,
+  type LeverConfirmationReading,
+  type LeverFieldFillInput,
+  type LeverFillResult,
+  type LeverSubmitClickResult,
+} from './real-submission';
 
 /**
  * Phase 9 - Lever ATS adapter.
@@ -29,13 +58,49 @@ import { isLeverApplicationUrl, type LeverRecognitionOptions } from './recogniti
  * generic ATS package. All navigation goes through the public
  * @jaa/browser API (SSRF-validated); this package never imports
  * Playwright. Inspection never fills candidate data and never uploads a
- * resume. Submission happens only through the explicit Phase 15A MOCK
- * submission boundary (`submitApplication`), which posts an identifiers-
- * only envelope to a local mock ATS server and stops on any CAPTCHA / MFA /
- * security challenge without ever solving or bypassing it.
+ * resume. Submission happens only through the explicit submission boundary
+ * (`submitApplication`) and has three server-decided modes:
+ *
+ *  - MOCK (Phase 15A): posts an identifiers-only envelope to a local mock
+ *    ATS server - the default and unchanged behavior;
+ *  - REAL (Phase 15C): fills and submits the live Lever form, only under
+ *    the server's real-submission capability (the core target policy
+ *    enforces this before the adapter is ever called);
+ *  - LEVER_API (Phase 15C): when the employer-issued Lever API key is
+ *    configured and the URL exposes the documented posting id, the
+ *    documented non-browser submission endpoint is preferred (no browser,
+ *    no CAPTCHA surface). The choice is server-side only and the fallback
+ *    to the form path is never silent - see
+ *    {@link selectLeverSubmissionPath}.
+ *
+ * All modes stop on any CAPTCHA / MFA / security challenge without ever
+ * solving or bypassing it, and report UNKNOWN outcomes as unconfirmed
+ * rather than guessing.
  */
 
 export const LEVER_PROVIDER = 'LEVER';
+
+// Post-submit confirmation polling (REAL mode). The grace period lets the
+// submit navigation start before the first read; a rejection verdict must
+// additionally stay stable across several reads so a slow success
+// transition is never misread as a refusal.
+const CONFIRMATION_GRACE_MS = 2_000;
+const CONFIRMATION_POLL_MS = 500;
+const CONFIRMATION_WINDOW_MS = 20_000;
+const CONFIRMATION_STABLE_READS = 3;
+
+// Challenge settle window (REAL mode): challenge scripts load asynchronously
+// and can appear AFTER the form's first scan. Before the final pre-submit
+// challenge re-scan the adapter waits up to this long for challenge markers
+// to surface, so a late-loading challenge still stops the submission before
+// the final submit action. Detection only - a challenge is never solved,
+// bypassed, or waited out.
+const CHALLENGE_SETTLE_MS = 4_000;
+const CHALLENGE_SETTLE_POLL_MS = 500;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export type LeverAdapterOptions = LeverRecognitionOptions;
 
@@ -292,6 +357,19 @@ export class LeverAtsAdapter implements AtsAdapter {
       );
     }
 
+    // Phase 15C - server-side path selection. The documented Apply API is
+    // preferred when the employer authorized it (API key) and the URL
+    // exposes the documented posting id. When it is unavailable the form
+    // path runs under the EXISTING core policy (never relaxed here) and the
+    // fallback is recorded - never silent.
+    const pathSelection = selectLeverSubmissionPath({
+      url: context.url,
+      submissionMode: context.submissionMode,
+    });
+    if (pathSelection.path === 'LEVER_API') {
+      return await this.submitViaLeverApi(context, pathSelection.target, pathSelection.config);
+    }
+
     // ---- pre-request phase: failures here mean NOTHING was submitted ----
     let scan: LeverRawScan;
     try {
@@ -320,7 +398,7 @@ export class LeverAtsAdapter implements AtsAdapter {
     }
 
     const url = context.page.getCurrentUrl();
-    const warnings: string[] = [];
+    const warnings: string[] = [pathSelection.reason];
 
     // Security challenges stop submission immediately - never solved.
     if (scan.captcha) {
@@ -366,6 +444,14 @@ export class LeverAtsAdapter implements AtsAdapter {
     }
 
     // ---- request phase: from here the outcome may be UNKNOWN -----------
+    // Phase 15C - REAL mode fills and submits the live Lever form. It is
+    // only reachable under the server's real-submission capability (the
+    // core workflow enforces this before calling the adapter). MOCK mode
+    // keeps the Phase 15A identifiers-only envelope below, unchanged.
+    if (context.submissionMode === 'REAL') {
+      return await this.submitRealLeverForm(context, scan, url, warnings);
+    }
+
     const script = buildMockSubmissionScript(scan.formSelector, {
       kind: MOCK_SUBMISSION_KIND,
       applicationId: context.applicationId ?? '',
@@ -414,6 +500,472 @@ export class LeverAtsAdapter implements AtsAdapter {
       };
     }
     throw new AtsError('SUBMISSION_UNCONFIRMED', parsed.reason, this.provider);
+  }
+
+  /**
+   * Phase 15C - documented, employer-authorized Apply API submission
+   * (NON-BROWSER). The employer issued a Lever API key for this
+   * integration, so the documented submission endpoint is used instead of
+   * the web form. This path carries no browser-based CAPTCHA surface at all
+   * (Lever's spam protection lives on the hosted web form), so the CAPTCHA
+   * policy is untouched: challenges are still detected and never solved on
+   * every browser path.
+   *
+   * Safety contract:
+   *  - every failure BEFORE the submission request (unreadable question
+   *    schema, unreadable/unsupported approved resume, missing/ungrounded
+   *    required answers) is a KNOWN pre-send failure: nothing was
+   *    submitted (the temporary file upload is never an application);
+   *  - exactly ONE submission request is issued - the Apply endpoint has
+   *    no idempotency support, so nothing here ever retries;
+   *  - a thrown SUBMISSION_UNCONFIRMED always means the request may have
+   *    reached the provider: UNKNOWN outcome, never retried blindly. This
+   *    includes a 2xx WITHOUT the documented application id - the
+   *    documented success contract is "201 + data.applicationId", and a
+   *    bare 2xx is not acceptance evidence;
+   *  - success is reported from real provider evidence only: the
+   *    documented application id (PROVIDER_ID), never invented;
+   *  - diagnostics name fields/labels only: answer values, the API key and
+   *    file contents never appear in results, warnings, or error messages.
+   */
+  private async submitViaLeverApi(
+    context: AtsSubmissionContext,
+    target: LeverPostingTarget,
+    config: LeverApiConfig
+  ): Promise<AtsSubmissionResult> {
+    const baseUrl = config.baseUrl;
+    const warnings: string[] = [];
+
+    // 1. Read-only documented question list. It grounds the field mapping
+    //    and the client-side required validation.
+    let questions: LeverApplyQuestions;
+    try {
+      questions = await fetchLeverApplyQuestions({
+        apiKey: config.apiKey,
+        postingId: target.postingId,
+        ...(baseUrl ? { baseUrl } : {}),
+      });
+    } catch (err) {
+      if (isAtsError(err)) {
+        // The provider answered the read request with an error - the
+        // posting may be gone or the key lacks access. Known pre-send
+        // failure: nothing was submitted.
+        throw new AtsError(
+          'SUBMISSION_FAILED',
+          `The Lever application question list could not be read (nothing was submitted): ${err.message}`,
+          this.provider,
+          err
+        );
+      }
+      // Network failure on a READ request - transient, and nothing was
+      // sent: a bounded retry of this attempt is safe.
+      throw new AtsError(
+        'PROVIDER_UNAVAILABLE',
+        `The Lever application question list could not be fetched (nothing was submitted): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        this.provider,
+        err
+      );
+    }
+
+    // 2. The approved resume - the only file ever sent, and only ever the
+    //    approved one. An unreadable file is a pre-send failure.
+    let resumeContent: Uint8Array | null = null;
+    let resumeFileName: string | null = null;
+    if (context.resumeFile) {
+      try {
+        const buffer = await readFile(context.resumeFile);
+        if (buffer.length === 0) throw new Error('the approved resume file is empty');
+        resumeContent = new Uint8Array(buffer);
+        resumeFileName = basename(context.resumeFile);
+      } catch (err) {
+        throw new AtsError(
+          'SUBMISSION_FAILED',
+          `The approved resume file could not be read (nothing was submitted): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          this.provider,
+          err
+        );
+      }
+    }
+
+    // 3. Map the approved answers onto the documented schema (never
+    //    fabricated) and validate EVERYTHING before any request is sent.
+    const build = buildLeverApplyInput({
+      questions,
+      fills: context.fieldFills ?? [],
+      resumeFileName,
+    });
+    warnings.push(...build.warnings);
+    const violations = [
+      ...build.violations,
+      ...(resumeContent && resumeFileName
+        ? validateLeverUploadFile({ filename: resumeFileName, content: resumeContent })
+        : []),
+    ];
+    if (violations.length > 0) {
+      // Client-side required validation refused the attempt BEFORE anything
+      // was sent. Field names and problems only - never answer values.
+      throw new AtsError(
+        'SUBMISSION_FAILED',
+        `The application was not sent: ${violations
+          .map((violation) => `${violation.field} ${violation.problem}`)
+          .join('; ')}`,
+        this.provider
+      );
+    }
+
+    // 4. Documented temporary upload (POST /v1/uploads). It stores a
+    //    temporary file only and can never create an application.
+    let input = build.input;
+    if (resumeContent && resumeFileName) {
+      const upload = await uploadLeverApplyFile({
+        apiKey: config.apiKey,
+        filename: resumeFileName,
+        content: resumeContent,
+        ...(baseUrl ? { baseUrl } : {}),
+      });
+      input = withLeverResumeUri(input, upload.uri);
+    }
+
+    // 5. Exactly ONE documented submission request (no retry anywhere).
+    const result = await submitLeverApplyApplication({
+      apiKey: config.apiKey,
+      postingId: target.postingId,
+      input,
+      ...(baseUrl ? { baseUrl } : {}),
+    });
+
+    if (result.kind === 'ACCEPTED') {
+      // Real provider evidence: the documented application id.
+      return {
+        provider: this.provider,
+        url: context.url,
+        outcome: 'SUBMITTED',
+        externalApplicationId: result.reference,
+        confirmationUrl: null,
+        httpStatus: result.httpStatus,
+        challenge: null,
+        confirmation: {
+          method: 'PROVIDER_ID',
+          reference: result.reference,
+          url: null,
+        },
+        transport: 'API',
+        warnings,
+      };
+    }
+    if (result.kind === 'REFUSED') {
+      if (result.httpStatus === 401 || result.httpStatus === 403) {
+        // The provider refused the CONFIGURED CREDENTIALS - the application
+        // itself was never evaluated and nothing was recorded. A known
+        // pre-send failure: fix the employer-issued key, never auto-retry.
+        throw new AtsError(
+          'SUBMISSION_FAILED',
+          `The Lever API refused the configured employer credentials (HTTP ${result.httpStatus}); nothing was submitted - verify the employer-issued API key and its permissions`,
+          this.provider
+        );
+      }
+      // The provider answered and refused the application (4xx, including
+      // the documented rate-limit refusal that creates no application):
+      // a definitive refusal - nothing was submitted.
+      return {
+        provider: this.provider,
+        url: context.url,
+        outcome: 'REJECTED',
+        externalApplicationId: null,
+        confirmationUrl: null,
+        httpStatus: result.httpStatus,
+        challenge: null,
+        transport: 'API',
+        warnings: [...warnings, result.detail],
+      };
+    }
+
+    // BLOCKED: client-side validation refused before any request.
+    throw new AtsError(
+      'SUBMISSION_FAILED',
+      `The application was not sent: ${result.violations
+        .map((violation) => `${violation.field} ${violation.problem}`)
+        .join('; ')}`,
+      this.provider
+    );
+  }
+
+  /**
+   * Phase 15C - controlled REAL Lever submission: fill the live form from
+   * the prepared answers, re-check for security challenges, submit through
+   * the form's own submit control, and verify REAL provider confirmation.
+   * Only reachable under the server's real-submission capability - the core
+   * target policy decides the mode and refuses any real target without it.
+   *
+   * Safety contract:
+   *  - every failure BEFORE the submit control is activated means the
+   *    application was definitively NOT submitted;
+   *  - CAPTCHA / MFA / security challenges are re-scanned after filling and
+   *    stop the submission immediately - never solved, never bypassed;
+   *  - once the submit control is activated, any unresolvable failure
+   *    throws SUBMISSION_UNCONFIRMED (unknown outcome), never a blind retry;
+   *  - success is reported only from real provider evidence (an explicit
+   *    application-received confirmation page, or a provider reference) -
+   *    never fabricated;
+   *  - prepared answers stay in memory and the live form only: never
+   *    logged, never persisted to events or queue payloads.
+   */
+  private async submitRealLeverForm(
+    context: AtsSubmissionContext,
+    scan: LeverRawScan,
+    url: string,
+    warnings: string[]
+  ): Promise<AtsSubmissionResult> {
+    // ---- fill phase: nothing has been submitted yet ---------------------
+    const filledSelectors = new Set<string>();
+    try {
+      const prepared: LeverFieldFillInput[] = (context.fieldFills ?? [])
+        .filter((fill) => fill.fieldType !== 'FILE')
+        .map((fill) => ({
+          cssSelector: fill.locator?.cssSelector ?? null,
+          fieldType: fill.fieldType,
+          value: fill.value,
+          options: fill.options ?? null,
+        }));
+      // Native selects are only ever set to a live option grounded in the
+      // approved answer; unmatched answers are recorded as missed and
+      // never guessed (never a default selection).
+      const fillResult = (await context.page.evaluate(
+        buildFillLeverFormScript(prepared)
+      )) as LeverFillResult;
+      for (const selector of fillResult.filled) filledSelectors.add(selector);
+      if (fillResult.missed.length > 0) {
+        warnings.push(
+          `${fillResult.missed.length} prepared field value(s) could not be matched to the live form (or had no grounded option) and were not filled`
+        );
+      }
+      await this.uploadLeverResumeFile(context, scan, warnings);
+    } catch (err) {
+      if (err instanceof AtsError) throw err;
+      // Filling never sends the application: a fill failure is definitive.
+      throw new AtsError(
+        'SUBMISSION_FAILED',
+        `Filling the Lever form failed before anything was submitted: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        this.provider,
+        err
+      );
+    }
+
+    // ---- challenge settle + re-scan -------------------------------------
+    // Challenge scripts load asynchronously and may appear after the first
+    // scan. Wait briefly so a late-loading challenge is STILL detected
+    // before the final submit action - then stop immediately if one is
+    // present. Never solved, never bypassed.
+    await this.settleChallenges(context.page);
+    let rescan: LeverRawScan;
+    try {
+      rescan = await context.page.evaluate(scanLeverPage);
+    } catch (err) {
+      throw new AtsError(
+        'SUBMISSION_FAILED',
+        `Re-checking the form before submission failed (nothing was submitted): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        this.provider,
+        err
+      );
+    }
+    const fieldStates = scan.fields.map((f) => ({
+      label: f.label,
+      type: f.kind,
+      required: f.required,
+      filled: filledSelectors.has(f.cssSelector),
+    }));
+    if (rescan.captcha || rescan.securityChallenge) {
+      const detail = rescan.captcha ?? rescan.securityChallenge ?? 'security-challenge';
+      const challenge = { kind: challengeKindFor(detail), detail };
+      // PII-free diagnostics: which required questions and which challenge
+      // blocked progress - labels and types only, never candidate answers.
+      warnings.push(...describeLeverRefusal(fieldStates, challenge));
+      return {
+        provider: this.provider,
+        url,
+        outcome: 'CHALLENGE_DETECTED',
+        externalApplicationId: null,
+        confirmationUrl: null,
+        httpStatus: null,
+        challenge,
+        transport: 'BROWSER',
+        warnings,
+      };
+    }
+
+    // ---- submit phase: from here the outcome may be UNKNOWN -------------
+    let click: LeverSubmitClickResult;
+    try {
+      click = (await context.page.evaluate(
+        buildSubmitLeverFormScript(rescan.formSelector ?? scan.formSelector)
+      )) as LeverSubmitClickResult;
+    } catch (err) {
+      // The click may have triggered navigation that tore the page down
+      // mid-evaluation - the request may have gone out. Unknown outcome.
+      throw new AtsError(
+        'SUBMISSION_UNCONFIRMED',
+        `The submission click outcome is unknown: ${err instanceof Error ? err.message : String(err)}`,
+        this.provider,
+        err
+      );
+    }
+    if (!click || click.method === 'none') {
+      // No submit control was activated: nothing was sent (definitive).
+      throw new AtsError(
+        'SUBMISSION_FAILED',
+        'No submit control was found on the Lever form; nothing was submitted',
+        this.provider
+      );
+    }
+
+    // ---- confirmation phase: only real provider evidence counts --------
+    const reading = await this.awaitLeverConfirmation(context.page);
+    const verdict = interpretLeverConfirmation(reading);
+    const finalUrl = reading?.url || url;
+
+    if (verdict === 'CONFIRMED' && reading) {
+      const reference =
+        reading.reference && reading.reference.trim().length > 0
+          ? reading.reference.trim()
+          : null;
+      return {
+        provider: this.provider,
+        url: reading.url || finalUrl,
+        outcome: 'SUBMITTED',
+        externalApplicationId: reference,
+        confirmationUrl: reading.url || finalUrl,
+        httpStatus: null,
+        challenge: null,
+        confirmation: {
+          method: reference ? 'PROVIDER_ID' : 'SUCCESS_PAGE',
+          reference,
+          url: reading.url || finalUrl,
+        },
+        transport: 'BROWSER',
+        warnings,
+      };
+    }
+    if (verdict === 'REJECTED') {
+      // The form actively refused the submission (visible validation or
+      // required errors): definitive - the application was NOT submitted.
+      warnings.push(
+        'The form actively refused the submission (visible validation errors); nothing was submitted'
+      );
+      warnings.push(...describeLeverRefusal(fieldStates, null));
+      return {
+        provider: this.provider,
+        url: finalUrl,
+        outcome: 'REJECTED',
+        externalApplicationId: null,
+        confirmationUrl: null,
+        httpStatus: null,
+        challenge: null,
+        transport: 'BROWSER',
+        warnings,
+      };
+    }
+    // UNKNOWN: the request may or may not have been accepted. Never
+    // retried blindly - the caller records the unknown outcome.
+    throw new AtsError(
+      'SUBMISSION_UNCONFIRMED',
+      'The submission completed without a verifiable confirmation; the outcome is unknown and must never be retried blindly',
+      this.provider
+    );
+  }
+
+  /**
+   * Brief bounded wait for late-loading challenge markers before the final
+   * pre-submit challenge re-scan. Detection only: the adapter never solves
+   * or bypasses a challenge and never waits one OUT - as soon as a
+   * challenge is present the flow stops.
+   */
+  private async settleChallenges(target: {
+    evaluate<T>(pageFunction: string | ((arg?: unknown) => T)): Promise<T>;
+  }): Promise<void> {
+    const deadline = Date.now() + CHALLENGE_SETTLE_MS;
+    while (Date.now() < deadline) {
+      try {
+        const scan = await target.evaluate(scanLeverPage);
+        if (scan.captcha || scan.securityChallenge) return;
+      } catch {
+        // The page may be mid-render; keep polling until the window ends.
+      }
+      await sleep(CHALLENGE_SETTLE_POLL_MS);
+    }
+  }
+
+  /**
+   * Upload the approved resume file to the form's FILE fields (REAL mode).
+   * Only the approved resume is ever uploaded; any other file field is left
+   * empty with a warning. A missing file is a fill-phase failure (nothing
+   * has been submitted yet).
+   */
+  private async uploadLeverResumeFile(
+    context: AtsSubmissionContext,
+    scan: LeverRawScan,
+    warnings: string[]
+  ): Promise<void> {
+    for (const raw of scan.fields) {
+      if (raw.kind !== 'file') continue;
+      const semantic = classifyLeverField(raw.label, raw.attributes);
+      if (semantic === 'resume' && context.resumeFile) {
+        await context.page.setInputFiles(raw.cssSelector, [context.resumeFile]);
+        continue;
+      }
+      warnings.push(
+        semantic === 'resume'
+          ? 'The resume file field was left empty: no approved resume file is available'
+          : `The file field "${raw.label}" was left empty: no approved file is available for it`
+      );
+    }
+  }
+
+  /**
+   * Poll the post-submit page for real provider confirmation evidence.
+   * CONFIRMED is accepted as soon as it is observed; a REJECTED verdict
+   * must stay stable across several reads so a slow success transition is
+   * never misread as a refusal. Returns the last reading (possibly null) if
+   * the observation window ends without a stable verdict.
+   */
+  private async awaitLeverConfirmation(target: {
+    evaluate<T>(pageFunction: string | ((arg?: unknown) => T)): Promise<T>;
+  }): Promise<LeverConfirmationReading | null> {
+    const deadline = Date.now() + CONFIRMATION_WINDOW_MS;
+    await sleep(CONFIRMATION_GRACE_MS);
+    let last: LeverConfirmationReading | null = null;
+    let stableRefusals = 0;
+    while (Date.now() < deadline) {
+      let reading: LeverConfirmationReading | null = null;
+      try {
+        reading = (await target.evaluate(
+          buildReadLeverConfirmationScript()
+        )) as LeverConfirmationReading;
+      } catch {
+        // The page is mid-navigation; read again once it settles.
+        reading = null;
+      }
+      if (reading) {
+        last = reading;
+        const verdict = interpretLeverConfirmation(reading);
+        if (verdict === 'CONFIRMED') return reading;
+        if (verdict === 'REJECTED') {
+          stableRefusals += 1;
+          if (stableRefusals >= CONFIRMATION_STABLE_READS) return reading;
+        } else {
+          stableRefusals = 0;
+        }
+      }
+      await sleep(CONFIRMATION_POLL_MS);
+    }
+    return last;
   }
 
   /**

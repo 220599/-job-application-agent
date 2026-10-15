@@ -406,6 +406,12 @@ export interface Job {
   createdAt: Date;
   /** Included by the jobs list/detail endpoints for the current user */
   jobMatches?: JobMatchSummary[];
+  /**
+   * Whether a registered ATS adapter can handle this job's application URL.
+   * Computed by the jobs endpoints (single source of truth); the UI uses it to
+   * enable or disable the Apply action instead of guessing board support.
+   */
+  applySupported?: boolean;
 }
 
 export interface MatchResult {

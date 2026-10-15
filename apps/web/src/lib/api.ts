@@ -235,6 +235,10 @@ export const jobsApi = {
       method: 'POST',
       body: JSON.stringify({ url }),
     }),
+  delete: (id: string) =>
+    fetchApi<{ data: { id: string } }>(`/api/jobs/${id}`, {
+      method: 'DELETE',
+    }),
   // Matching (Phase 5)
   calculateMatch: (jobId: string) =>
     fetchApi<{ data: JobMatchSummary }>(`/api/jobs/${jobId}/match`, {
@@ -242,4 +246,124 @@ export const jobsApi = {
     }),
   getMatch: (jobId: string) =>
     fetchApi<{ data: JobMatchSummary }>(`/api/jobs/${jobId}/match`),
+};
+
+// Application APIs (Phase 15D - user-facing application status)
+export type SubmissionPhase =
+  | 'PREPARATION_REQUIRED'
+  | 'PREPARING'
+  | 'AWAITING_APPROVAL'
+  | 'APPROVED'
+  | 'PROCESSING'
+  | 'SUBMITTED'
+  | 'PROVIDER_REJECTED'
+  | 'FAILED_BEFORE_SUBMISSION'
+  | 'SECURITY_CHALLENGE'
+  | 'OUTCOME_UNKNOWN'
+  | 'CANCELLED'
+  | 'CLOSED';
+
+// Derived server-side from authoritative state only. An unknown outcome is
+// never presented as a success, and nothing here is client-influenced.
+export interface SubmissionStatusView {
+  phase: SubmissionPhase;
+  code: string | null;
+  safeToRetry: boolean;
+  requiresHumanResolution: boolean;
+  guidance: string;
+}
+
+export interface ApplicationSummary {
+  id: string;
+  jobId: string;
+  status: string;
+  errorCode: string | null;
+  errorMessage: string | null;
+  applicationUrl: string | null;
+  externalApplicationId: string | null;
+  submittedAt: string | null;
+  createdAt: string;
+  job: { title: string; company: string; url: string | null; ats: string } | null;
+  submissionStatus: SubmissionStatusView | null;
+}
+
+// Application review detail (GET /api/applications/:id): everything the user
+// needs to review the exact application before approving it.
+export interface ApplicationAnswerView {
+  answer: string | null;
+  source: string;
+  confidence: number | null;
+  needsReview: boolean;
+  groundedFacts: string[];
+}
+
+export interface ApplicationQuestionView {
+  id: string;
+  label: string;
+  fieldType: string;
+  required: boolean;
+  mappedSource: string | null;
+  confidence: number | null;
+  currentValue: string | null;
+  answer: ApplicationAnswerView | null;
+}
+
+export interface ApplicationEventView {
+  id: string;
+  eventType: string;
+  status: string | null;
+  message: string | null;
+  createdAt: string;
+}
+
+export type ApplicationDetail = Omit<ApplicationSummary, 'job'> & {
+  job: {
+    id: string;
+    title: string;
+    company: string;
+    location: string | null;
+    url: string | null;
+    applicationUrl: string | null;
+    ats: string | null;
+  } | null;
+  resumeVersion: {
+    id: string;
+    resumeId: string;
+    versionNumber: number;
+    reviewStatus: string | null;
+  } | null;
+  questions: ApplicationQuestionView[];
+  events: ApplicationEventView[];
+};
+
+export const applicationsApi = {
+  list: (page = 1, pageSize = 20) =>
+    fetchApi<{
+      data: ApplicationSummary[];
+      pagination: { page: number; pageSize: number; total: number };
+    }>(`/api/applications?page=${page}&pageSize=${pageSize}`),
+  get: (id: string) => fetchApi<{ data: ApplicationDetail }>(`/api/applications/${id}`),
+  // The UI "Apply" action: create (or return) the application for a job.
+  // Idempotent per (user, job) - `alreadyExists` tells the UI to show the
+  // persisted status instead of pretending a new application was created.
+  create: (data: { jobId: string; resumeVersionId?: string }) =>
+    fetchApi<{ data: ApplicationSummary; alreadyExists: boolean }>('/api/applications', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  // Start or resume the existing preparation workflow (idempotent server-side).
+  prepare: (id: string) =>
+    fetchApi<{ automationRun: unknown }>(`/api/applications/${id}/prepare`, {
+      method: 'POST',
+    }),
+  approve: (id: string) =>
+    fetchApi<{ data: { applicationId: string; status: string; alreadyApproved: boolean } }>(
+      `/api/applications/${id}/approve`,
+      { method: 'POST' }
+    ),
+  submit: (id: string) =>
+    fetchApi<{ automationRun: unknown; alreadySubmitted?: boolean; enqueued?: boolean }>(
+      `/api/applications/${id}/submit`,
+      { method: 'POST' }
+    ),
 };

@@ -6,7 +6,7 @@
   "main": "src/index.ts",
   "type": "module",
   "scripts": {
-    "dev": "node --loader tsx/esm src/index.ts",
+    "dev": "node --import tsx/esm src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "eslint src",

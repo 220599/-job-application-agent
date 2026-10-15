@@ -1,6 +1,12 @@
+import path from 'path';
+import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 
+// Load env vars: local apps/worker/.env first, then repo root .env (no
+// override) - same as the API; the root .env carries DATABASE_URL/REDIS_URL.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config();
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 import {
   createPreparationWorker,

@@ -3,6 +3,7 @@ import type { Application, ResumeVersion } from '@jaa/database';
 import type { AtsAdapter, AtsRegistry } from '@jaa/ats';
 
 import { provenanceOf } from '../resume-review';
+import { findUnresolvedSubmissionAttempt } from '../application-submission';
 import {
   OrchestrationError,
   PREPARABLE_APPLICATION_STATUSES,
@@ -62,6 +63,19 @@ export async function checkPreparationEligibility(
     throw new OrchestrationError(
       'APPLICATION_STATE_NOT_PREPARABLE',
       `Application status ${application.status} cannot be queued for preparation`
+    );
+  }
+
+  // Phase 15D lifecycle guard: an application with an UNRESOLVED submission
+  // attempt has an UNKNOWN submission outcome (a previous worker may have
+  // submitted without recording it). It requires human resolution and must
+  // NEVER be reset to a fresh preparation state (which would erase the
+  // "requires resolution" signal and could lead to a second submission).
+  const unresolvedAttemptId = await findUnresolvedSubmissionAttempt(application.id);
+  if (unresolvedAttemptId) {
+    throw new OrchestrationError(
+      'SUBMISSION_OUTCOME_UNKNOWN',
+      'A previous submission attempt has an unknown outcome; the application requires human resolution and cannot be prepared again'
     );
   }
 

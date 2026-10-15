@@ -33,6 +33,9 @@ export type OrchestrationErrorCode =
   | 'PREPARATION_FAILED'
   // Phase 15A - submission gate + submission outcomes.
   | 'HUMAN_APPROVAL_REQUIRED'
+  // Phase 15D - approval integrity (snapshot binding).
+  | 'APPROVAL_NOT_VERIFIED'
+  | 'APPROVAL_STALE'
   | 'APPLICATION_STATE_NOT_SUBMITTABLE'
   | 'SUBMISSION_OUTCOME_UNKNOWN'
   | 'REQUIRED_ANSWER_MISSING'

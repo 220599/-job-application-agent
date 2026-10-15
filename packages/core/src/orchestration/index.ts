@@ -70,15 +70,23 @@ export {
   isLoopbackUrl,
 } from './submission-eligibility';
 
-// Phase 15B - controlled real Greenhouse submission capability. The switch is
-// server-side only (JAA_REAL_GREENHOUSE_SUBMISSION_ENABLED), disabled by
-// default, Greenhouse-only, and SSRF-validated. Lever stays mock-only.
+// Phase 15B/15C - controlled real submission capabilities. Each switch is
+// server-side only (JAA_REAL_GREENHOUSE_SUBMISSION_ENABLED for Greenhouse,
+// JAA_REAL_LEVER_SUBMISSION_ENABLED for Lever), disabled by default,
+// provider-scoped (one flag can never enable the other provider), and
+// SSRF-validated.
 export {
   REAL_GREENHOUSE_SUBMISSION_FLAG,
+  REAL_LEVER_SUBMISSION_FLAG,
   REAL_SUBMISSION_PROVIDER,
+  REAL_LEVER_SUBMISSION_PROVIDER,
   isRealGreenhouseSubmissionEnabled,
+  isRealLeverSubmissionEnabled,
   assertRealGreenhouseSubmissionEnabled,
+  assertRealLeverSubmissionEnabled,
+  assertAnyRealSubmissionCapabilityEnabled,
   assertRealGreenhouseSubmissionTarget,
+  assertRealLeverSubmissionTarget,
   assertSubmissionTarget,
   resolveSubmissionMode,
 } from '../submission-policy';

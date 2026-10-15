@@ -321,6 +321,12 @@ model Application {
   lastAttemptAt          DateTime?
   errorCode              String?
   errorMessage           String?
+  // Phase 15D approval integrity: the explicit approval action binds the
+  // EXACT application snapshot being approved (target, resume version,
+  // questions/answers fingerprint). Content drift after approval invalidates
+  // the approval - a new explicit approval is always required.
+  approvedAt             DateTime?
+  approvalSnapshot       Json?
   createdAt              DateTime            @default(now())
   updatedAt              DateTime            @updatedAt
 
